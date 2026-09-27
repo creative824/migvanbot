@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>הצעת מחיר - {{ business_name }}</title>
+<style>
+  @font-face {
+    font-family: "Heebo";
+    src: url("{{ font_b64 }}") format("truetype");
+    font-weight: 100 900;
+    font-display: block;
+  }
+
+  @page { size: A4; margin: 0; }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+
+  body {
+    font-family: "Heebo", "Arial", sans-serif;
+    color: #141414;
+    font-size: 12pt;
+    line-height: 1.55;
+    direction: rtl;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .sheet {
+    position: relative;
+    width: 210mm;
+    height: 297mm;          /* בדיוק עמוד A4 אחד */
+    padding-bottom: 40mm;   /* מקום לרצועת הפוטר */
+    overflow: hidden;
+    page-break-after: always;
+    break-after: page;
+  }
+  .sheet:last-child { page-break-after: auto; break-after: auto; }
+
+  .bleed { display: block; width: 100%; }
+  .header-img { margin-bottom: 20mm; }
+  .footer-img { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; }
+
+  /* כשיש לוגו לקוח – מצמצמים רווחים כדי שהעמוד לא יגלוש */
+  .sheet.has-logo .header-img { margin-bottom: 4mm; }
+  .sheet.has-logo .client-logo { margin: 0 0 6mm; }
+  .sheet.has-logo .content { font-size: 11pt; }
+  .sheet.has-logo .submitter { margin: 9pt 0 10pt; }
+  .sheet.has-logo p { margin-bottom: 7pt; }
+  .sheet.has-logo .why-title { margin: 10pt 0 6pt; }
+  .sheet.has-logo ul.bullets > li { margin-bottom: 6pt; }
+  .sheet.has-logo .sign { margin-top: 12pt; }
+
+  .content { padding: 0 22mm; }
+  .sheet.plain .content { padding-top: 26mm; }
+  .sheet.compact { padding-bottom: 18mm; }
+  .sheet.compact .content { padding-top: 6mm; font-size: 9pt; }
+  .sheet.compact .footer-img { max-height: 15mm; object-fit: contain; object-position: bottom; }
+  .sheet.compact table.price { font-size: 8.6pt; line-height: 1.22; margin: 4pt 0 3pt; }
+  .sheet.compact table.price th, .sheet.compact table.price td { padding: 2pt 5pt; }
+  .sheet.compact table.price thead th { font-size: 8.6pt; }
+  .sheet.compact table.summary { font-size: 8.6pt; margin: 4pt 0 2pt; }
+  .sheet.compact table.summary td { padding: 2pt 5pt; }
+  .sheet.compact .price-head { margin-bottom: 4pt; }
+  .sheet.compact .notes-title { margin: 6pt 0 3pt; }
+  .sheet.compact ol.notes { font-size: 9pt; }
+  .sheet.compact ol.notes > li { margin-bottom: 2pt; }
+  .sheet.compact .sign { margin-top: 6pt; }
+
+  p { margin: 0 0 10pt; }
+  strong { font-weight: 700; }
+  u { text-underline-offset: 3px; }
+
+  .client-logo {
+    text-align: center;
+    margin: 0 0 14mm;
+  }
+  .client-logo img {
+    max-height: 26mm;
+    max-width: 80mm;
+    object-fit: contain;
+  }
+
+  .recipient p { margin: 0; font-weight: 700; }
+  .submitter { margin: 14pt 0 18pt; }
+
+  .lead { font-size: 12.5pt; }
+  .muted { color: #333; }
+
+  .why-title { font-weight: 700; margin: 16pt 0 8pt; }
+  ul.bullets { margin: 0; padding: 0; list-style: none; }
+  ul.bullets > li {
+    position: relative;
+    padding-right: 16pt;
+    margin-bottom: 9pt;
+  }
+  ul.bullets > li::before {
+    content: "";
+    position: absolute;
+    right: 0;
+    top: 0.62em;
+    width: 6pt;
+    height: 6pt;
+    background: #6aa84f;      /* migvan green */
+    border-radius: 50%;
+  }
+
+  .sign {
+    margin-top: 22pt;
+    font-weight: 700;
+  }
+  .sign u { padding-left: 120pt; }
+
+  .section-title {
+    text-align: center;
+    font-size: 21pt;
+    font-weight: 700;
+    margin: 0 0 16pt;
+  }
+  .subhead { font-weight: 700; margin: 18pt 0 12pt; }
+
+  .price-head p { margin: 0; font-weight: 700; }
+  .price-head { margin-bottom: 5pt; }
+
+  table.price {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    margin: 6pt 0 4pt;
+    font-size: 10pt;
+    line-height: 1.36;
+  }
+  table.price col.c-item { width: 56%; }
+  table.price col.c-price { width: 44%; }
+  table.price th, table.price td {
+    border: 1px solid #b9b9b9;
+    padding: 4pt 6pt;
+    vertical-align: top;
+    text-align: right;
+    word-wrap: break-word;
+  }
+  table.price thead th {
+    background: #2b2b2b;
+    color: #fff;
+    font-weight: 700;
+    font-size: 10pt;
+  }
+  table.price .money { font-weight: 700; white-space: nowrap; }
+  table.price tr.hl td:nth-child(2) { color: #c0392b; }
+
+  table.summary {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 7pt 0 4pt;
+    font-size: 10pt;
+  }
+  table.summary td {
+    border: 1px solid #b9b9b9;
+    padding: 4pt 6pt;
+  }
+  table.summary td:last-child {
+    width: 45mm;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  table.summary tr.total td { background: #f0f4ee; }
+
+  ol.notes { margin: 3pt 0 0; padding-right: 16pt; }
+  ol.notes > li { margin-bottom: 3pt; }
+  .notes-title { font-weight: 700; margin: 10pt 0 5pt; }
+  .compact .sign { margin-top: 10pt; }
+</style>
+</head>
+<body>
+
+<!-- ============ עמוד 1 ============ -->
+<section class="sheet{% if logo_b64 %} has-logo{% endif %}">
+  <img class="bleed header-img" src="{{ header_b64 }}" alt="Migvan">
+
+  {% if logo_b64 %}
+  <div class="client-logo"><img src="{{ logo_b64 }}" alt="{{ business_name }}"></div>
+  {% endif %}
+
+  <div class="content">
+    <div class="recipient">
+      <p>לכבוד: {{ business_name }}</p>
+      {% if address %}<p>{{ address }}</p>{% endif %}
+      {% if company_id %}<p>{{ company_id }}</p>{% endif %}
+      <p>{{ date_str }}</p>
+    </div>
+
+    <p class="submitter"><strong>מגיש ההצעה:</strong> {{ presenter_name }} - {{ presenter_phone }}</p>
+
+    <p class="lead">חברת מגוון מדיה קריאייטיב מתמחה במתן פתרונות מדיה כוללים וחדשניים בתחומי המוסיקה, הוידיאו וניהול הסושיאל בעסקים.</p>
+
+    <p class="muted">החברה הוקמה בשנת 2002 ועם השנים פיתחה טכנולוגיות מתקדמות במטרה להעניק ללקוח פתרון מקיף בתחום המדיה והקריאטיב בעסקים, והכל בבית אחד.</p>
+
+    <p class="muted">אנו מציעים את שרותינו למאות בתי עסק בפריסה ארצית בהם נמנים מסעדות, בתי קפה, חנויות אופנה, רשתות קמעוניות, מכוני ספא, אולמות תצוגה, חדרי כושר, פארמים ועוד.</p>
+
+    <p class="why-title">למה לבחור במגוון מדיה קריאטיב?</p>
+    <ul class="bullets">
+      <li>אנו מתחייבים להשקיע במיטב הטכנולוגיות והקדמה.</li>
+      <li>לתת שירות אישי ומקצועי ללקוח, להיות זמינים במיידי לכל שאלה, בעיה או ייעוץ.</li>
+      <li>לספק ולייצר את התוכן האיכותי ביותר בעלות המשתלמת ביותר ולהעסיק את מיטב המוחות שייצרו עבורכם את האוירה המושלמת בעסק.</li>
+    </ul>
+
+    <p class="sign"><u>חתימה וחותמת:</u></p>
+  </div>
+
+  <img class="bleed footer-img" src="{{ footer_b64 }}" alt="">
+</section>
+
+<!-- ============ עמוד 2 ============ -->
+<section class="sheet plain">
+  <div class="content">
+    <h1 class="section-title">שירות מוסיקה לעסקים</h1>
+
+    <p>שרותי המוזיקה של מגוון מייצרים חווית לקוח מרגשת באופן ששום אוזן לא תשאר אדישה אליו, צוות העורכים המוזיקאליים שלנו יבנו עבורכם קו מוזיקלי עם פלייליסטים רב ערוציים של מוסיקה לעסקים, בצורה אישית ובהתאם לאופי בית העסק וצרכיו הייעודיים.</p>
+
+    <p class="subhead"><u>מה אני מקבל בשירות המוזיקה והנגן של מגוון – migvan audio pro</u></p>
+
+    <ul class="bullets">
+      <li>איפיון ובניית קו מוזיקלי על פי צרכי הלקוח ובהתאם לאופי המיוחד של בית העסק, מתוך קטלוג המוזיקה הייחודי שיצרו עורכי המוזיקה של החברה עם הרבה השקעה כדי להבטיח קו ייחודי אשר יעצב עבור לקוחותיך חוויה מרגשת ושונה.</li>
+      <li>עדכוני מוזיקה שוטפים ברמה יומית בשליטה מרחוק.</li>
+      <li>עדכוני תוכנה ושדרוגים.</li>
+      <li>שרות טכני - למגוון חדר בקרה מאוייש במוקדנים וטכנאים שיספקו מענה אנושי זריז בזמן אמת, במידת הצורך טכנאי מגיע לבית העסק ופותר את קריאת השירות במקום ללא תשלום נוסף.</li>
+      <li>מאגר מוזיקה ותכנים ייחודים הגדול והמושקע ביותר בארץ.</li>
+      <li>התקנת נגן מוסיקה MIGVAN AUDIO PRO – נגן המדיה בפיתוח אישי המתקדם ביותר בעולם וייחודי לצורך ניהול מוסיקה בעסקים.</li>
+      <li>אפליקציה ייעודית גם לאייפון וגם לאנדרואיד ששולטת בנגן ומאפשרת לך לנהל את האווירה המוסיקלית בזמן אמת בצורה אינטואיטיבית ופשוטה.</li>
+      <li>התאמת הפלייליסטים והקו המוזיקלי לפי תזמונים - לפי שבוע, יום ושעה, כך שהאווירה תהיה מדויקת ומתאימה בכל דקה בעסק.</li>
+      <li>מיקס חכם ששומר על השמעה רציפה של השירים ללא חיתוכים והפסקות בין השירים.</li>
+      <li>AUDIO NORMALIZER - שמירה על רמת ווליום אחידה בין השירים.</li>
+      <li>יכולת הפצה ועדכון מוזיקה לכל הסניפים בו זמנית מחדר הבקרה של מגוון.</li>
+      <li>MIGVAN AUDIO PRO ידאג שהמוזיקה בעסק שלך תהיה עדכנית, שונה, ייחודית ועוצמתית.</li>
+    </ul>
+  </div>
+
+  <img class="bleed footer-img" src="{{ footer_b64 }}" alt="">
+</section>
+
+<!-- ============ עמוד 3 ============ -->
+<section class="sheet plain compact">
+  <div class="content">
+    <div class="price-head">
+      <p><u>מרכיבי השירות החודשי:</u> {{ business_name }}{% if company_id %} | {{ company_id }}{% endif %} | {{ date_str }}</p>
+    </div>
+
+    <table class="price">
+      <colgroup><col class="c-item"><col class="c-price"></colgroup>
+      <thead>
+        <tr><th>פריט</th><th>מחיר</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>מערכת MIGVAN AUDIO PRO כולל סטרימר בהשאלה, אין צורך במחשב!</td>
+          <td class="value"><span class="money">{{ monthly_price }} ₪</span> מחיר חודשי לנגן.<br>{{ track_label }}.</td>
+        </tr>
+        <tr class="hl">
+          <td>עריכת מוזיקה לפי קו מוזיקלי שיאופיין על ידי העורך המוזיקלי של מגוון, כולל התאמת פלייליסטים בהתאם לכל בית עסק</td>
+          <td><strong>כלול - כולל עשרות סגנונות ואלפי שירים בהתאמה ועריכה אישית ללקוח</strong> ע"י עורך מוזיקלי מקצועי הצמוד ללקוח</td>
+        </tr>
+        {% if broadcasts %}
+        <tr>
+          <td>שירות תשדירים – תשדירי מבצע וכלליים עד {{ broadcasts }} בחודש</td>
+          <td>כלול - יבוצעו על ידי קרייני מגוון כולל מאסטרינג ועריכה</td>
+        </tr>
+        {% endif %}
+        <tr>
+          <td>Smart catch – גם בעת ניתוק רשת האינטרנט הנגן ממשיך לנגן</td>
+          <td>כלול</td>
+        </tr>
+        <tr>
+          <td>Smart buffer - מנגנון חכם המונע חזרתיות של שירים וימנע מניגון אותם שירים באותן שעות ביום, ובכך שומר על אווירה מרעננת של הפלייליסטים כל הזמן</td>
+          <td>כלול</td>
+        </tr>
+        <tr>
+          <td>איפיון אופי העסק ע"י העורך המוזיקלי והתאמת הפלייליסט וליין אפ מוזיקלי לפי תזמונים של ימים, שעות וחגים.</td>
+          <td>כלול</td>
+        </tr>
+        <tr>
+          <td>Audio normalize - רמת ווליום אחידה במערכת + מיקס חכם בין השירים</td>
+          <td>כלול</td>
+        </tr>
+        <tr>
+          <td>עדכוני און ליין שוטפים ישירות לנגן ע"י עורכי המוזיקה, שיותאמו לכל בית עסק באופן אישי</td>
+          <td>כלול</td>
+        </tr>
+        <tr>
+          <td>התקנת מערכת חד-פעמית בבית העסק כולל הדרכה</td>
+          <td>עלות משלוח הנגן להתקנה עצמית. במידה וצריך מתקין מטעם מגוון, העלות הנה <span class="money">{{ install_price }} ש"ח</span></td>
+        </tr>
+        <tr>
+          <td>תמיכה 24/7</td>
+          <td>כלול</td>
+        </tr>
+        <tr>
+          <td>שליטה באפליקציית MIGVAN REMOTE עם רשת אינטרנט</td>
+          <td>כלול - כולל שליטה מרחוק, שינויי פלייליסטים, שליטה על ווליום, כפתורי לייק ודיסלייק המסננים שירים פחות אהובים ומעלים שירים אהובים יותר, עם <strong>מנגנון AI מיוחד</strong>.</td>
+        </tr>
+        <tr>
+          <td>תקופת שכירות מינימלית</td>
+          <td>12 חודשים, מתחדשת אוטומטית בסוף כל תקופה. ביטול התקשרות בהודעה מראש חודש לפני תום התקופה האקטואלית. תקופת ההתקשרות תחל מיום ההתקנה בפועל.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <table class="summary">
+      <tr>
+        <td>כמות נגנים</td>
+        <td>{{ qty }}</td>
+      </tr>
+      {% if qty > 1 %}
+      <tr class="total">
+        <td>סה"כ עלות חודשית לכל הנגנים (לפני מע"מ)</td>
+        <td>{{ monthly_total }} ₪</td>
+      </tr>
+      <tr class="total">
+        <td>סה"כ עלות התקנה חד-פעמית לכל הנגנים (לפני מע"מ)</td>
+        <td>{{ install_total }} ₪</td>
+      </tr>
+      {% endif %}
+    </table>
+
+    <p class="notes-title"><u>הערות כלליות:</u></p>
+    <ol class="notes">
+      <li>המחירים אינם כוללים מע"מ.</li>
+      <li>תנאי תשלום: כרטיס אשראי, הרשאה לחיוב חשבון, חודש בחודשו.</li>
+      <li>באחריות הלקוח לדאוג לתשתית בסיסית הנדרשת להפעלת הנגן במקום.</li>
+      <li>התשתית כוללת: חשמל, חיבור לאינטרנט וחיבור למערכת ההגברה בסמוך למיקום הנגן (עד מטר וחצי).</li>
+      <li>באחריות הלקוח לדאוג לחיבור אינטרנט פעיל בבית העסק.</li>
+      <li>תוקף ההצעה - 30 יום מיום הוצאתה.</li>
+      <li>אישור הצעת המחיר מהווה הזמנת עבודה.</li>
+      <li>תשלום לגופי הזכויות באחריות הלקוח בלבד.</li>
+      {% if rights_free %}
+      <li>הלקוח בחר במסלול <strong>מוזיקה ללא זכויות</strong> ולכן יהיה פטור מתשלום זה, ויקבל מסמך להצגה עבור גופי הזכויות.</li>
+      {% endif %}
+    </ol>
+
+    <p class="sign"><u>חתימה וחותמת:</u></p>
+  </div>
+
+  <img class="bleed footer-img" src="{{ footer_slim_b64 }}" alt="">
+</section>
+
+</body>
+</html>

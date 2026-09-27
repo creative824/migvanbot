@@ -1,0 +1,11 @@
+.git
+.env
+output/
+reference/
+reference_sample.pdf
+__pycache__/
+*.pyc
+.venv/
+venv/
+README.md
+run_local.bat
