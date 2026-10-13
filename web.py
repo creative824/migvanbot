@@ -85,7 +85,9 @@ const pad=document.getElementById('pad'), ctx=pad.getContext('2d');
 function fit(){const r=pad.getBoundingClientRect();const dpr=window.devicePixelRatio||1;
  pad.width=r.width*dpr;pad.height=r.height*dpr;ctx.scale(dpr,dpr);
  ctx.lineWidth=2.5;ctx.lineCap='round';ctx.strokeStyle='#12245b';}
-fit();addEventListener('resize',fit);
+fit();
+// לא קושרים ל-resize: בטלפון המקלדת שנפתחת/נסגרת (למשל בלחיצה על שדה השם)
+// מפעילה resize, וקריאה חוזרת ל-fit() הייתה מוחקת את החתימה שכבר צוירה.
 let drawing=false,dirty=false,last=null;
 function pos(e){const r=pad.getBoundingClientRect();const t=e.touches?e.touches[0]:e;
  return{x:t.clientX-r.left,y:t.clientY-r.top};}
@@ -93,6 +95,15 @@ function down(e){drawing=true;last=pos(e);e.preventDefault();}
 function move(e){if(!drawing)return;const p=pos(e);ctx.beginPath();ctx.moveTo(last.x,last.y);
  ctx.lineTo(p.x,p.y);ctx.stroke();last=p;dirty=true;e.preventDefault();}
 function up(){drawing=false;}
+function hasInk(){
+ // בדיקה אמיתית שיש קווים על הלוח (לא רק שה-flag dirty דלוק) -
+ // מגנה מפני מצב שבו הציור נמחק (למשל ע"י המקלדת שנפתחה) אבל dirty נשאר true.
+ try{
+  const d=ctx.getImageData(0,0,pad.width,pad.height).data;
+  for(let i=3;i<d.length;i+=4){ if(d[i]>10) return true; }
+  return false;
+ }catch(e){ return dirty; }
+}
 pad.addEventListener('pointerdown',down);pad.addEventListener('pointermove',move);
 addEventListener('pointerup',up);
 document.getElementById('clr').onclick=()=>{ctx.clearRect(0,0,pad.width,pad.height);dirty=false;};
@@ -100,7 +111,7 @@ document.getElementById('snd').onclick=async()=>{
  const err=document.getElementById('err');err.textContent='';
  const name=document.getElementById('name').value.trim();
  if(name.length<2){err.textContent='נא למלא שם מלא';return;}
- if(!dirty){err.textContent='נא לחתום במסגרת';return;}
+ if(!dirty || !hasInk()){err.textContent='נא לחתום במסגרת - נראה שהחתימה נמחקה, נסו לחתום שוב';return;}
  // תמונה משולבת: החתימה + שורת טקסט עם השם והתאריך
  const out=document.createElement('canvas');out.width=pad.width;out.height=pad.height+70;
  const o=out.getContext('2d');o.fillStyle='#fff';o.fillRect(0,0,out.width,out.height);
