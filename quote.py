@@ -5,9 +5,11 @@ import datetime as _dt
 import re
 from dataclasses import dataclass
 
+import config
+
 
 def today_str() -> str:
-    d = _dt.date.today()
+    d = config.tz_now()
     return f"{d.day}.{d.month}.{d.year}"
 
 
@@ -58,7 +60,7 @@ class QuoteData:
     # ── שם קובץ ה-PDF ──────────────────────────────────────
     def filename(self) -> str:
         safe = re.sub(r'[\\/:*?"<>|]+', "-", self.business_name).strip() or "לקוח"
-        date_iso = _dt.date.today().isoformat()
+        date_iso = config.tz_now().date().isoformat()
         return f"הצעת מחיר - {safe} - {date_iso}.pdf"
 
     # ── הקשר לתבנית ────────────────────────────────────────

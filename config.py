@@ -11,8 +11,39 @@ except Exception:
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 ASSETS_DIR = BASE_DIR / "assets"
-OUTPUT_DIR = BASE_DIR / "output"
-OUTPUT_DIR.mkdir(exist_ok=True)
+
+
+def _resolve_data_dir() -> Path:
+    """איפה נשמרים הקבצים והמאגר. בענן: דיסק קבוע (Railway Volume), אחרת התיקייה output."""
+    p = os.getenv("DATA_DIR", "").strip() or os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
+    return Path(p) if p else BASE_DIR / "output"
+
+
+DATA_DIR = _resolve_data_dir()
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR = DATA_DIR          # שם ישן, נשאר לתאימות
+
+# ── אזור זמן (לתאריכים בהצעה ובהודעות) ──────────────────────────────
+TIMEZONE = os.getenv("TIMEZONE", "Asia/Jerusalem").strip() or "Asia/Jerusalem"
+
+
+def tz_now():
+    """השעה עכשיו באזור הזמן של העסק (השרת בענן רץ ב-UTC)."""
+    import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        return _dt.datetime.now(ZoneInfo(TIMEZONE))
+    except Exception:
+        return _dt.datetime.now()
+
+
+def tz_from_ts(ts):
+    import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        return _dt.datetime.fromtimestamp(ts, ZoneInfo(TIMEZONE))
+    except Exception:
+        return _dt.datetime.fromtimestamp(ts)
 
 # ── חובה ─────────────────────────────────────────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -37,6 +68,10 @@ WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 # מקומית עם מנהרת cloudflared: הכתובת שהמנהרה מדפיסה.
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") \
     or f"http://localhost:{WEB_PORT}"
+
+# ── לוח בקרה (רשימת כל ההצעות) ─────────────────────────────────────
+# סיסמת הכניסה ל-/admin. בלי סיסמה – הלוח כבוי.
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
 
 # ── מייל בעת חתימה (Resend) ────────────────────────────────────────
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()

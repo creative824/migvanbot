@@ -1,16 +1,19 @@
-"""שרת קטן לעמוד חתימה שנשלח ללקוח בקישור (וואטסאפ)."""
+"""שרת אינטרנט: עמוד חתימה ללקוח (בקישור) + לוח בקרה של כל ההצעות (/admin)."""
 from __future__ import annotations
 
+import asyncio
 import base64
-import datetime as _dt
 import html
 import logging
-from pathlib import Path
+import secrets
+import time
+from urllib.parse import quote as _urlquote
 
 from aiohttp import web
 
 import config
-import store
+import db
+import pdfs
 from render import stamp_signature
 from email_send import send_signed_agreement
 
@@ -19,22 +22,22 @@ log = logging.getLogger("quote-bot.web")
 
 def _summary_rows(s: dict) -> str:
     rt = "מוזיקה ללא זכויות" if s.get("rights_free", True) else "מוזיקה רגילה (עם זכויות)"
+    qty = int(s.get("qty") or 1)
+    mp, ip = float(s.get("monthly_price") or 0), float(s.get("install_price") or 0)
     rows = [
         ("עסק", s.get("business_name", "")),
         ("מסלול", rt),
-        ("מחיר חודשי לנגן", f'{s.get("monthly_price")} ₪'),
-        ("מחיר התקנה לנגן", f'{s.get("install_price")} ₪'),
-        ("כמות נגנים", s.get("qty", 1)),
+        ("מחיר חודשי לנגן", f"{mp:g} ₪"),
+        ("מחיר התקנה לנגן", f"{ip:g} ₪"),
+        ("כמות נגנים", qty),
     ]
     if s.get("broadcasts"):
         rows.append(("שירות תשדירים", f'{s["broadcasts"]} בחודש'))
-    if s.get("qty", 1) > 1:
-        rows.append(("סה\"כ חודשי (לפני מע\"מ)",
-                     f'{s.get("monthly_price", 0) * s["qty"]} ₪'))
-        rows.append(("סה\"כ התקנה (לפני מע\"מ)",
-                     f'{s.get("install_price", 0) * s["qty"]} ₪'))
+    if qty > 1:
+        rows.append(('סה"כ חודשי (לפני מע"מ)', f"{mp * qty:g} ₪"))
+        rows.append(('סה"כ התקנה (לפני מע"מ)', f"{ip * qty:g} ₪"))
     return "".join(
-        f'<tr><td>{html.escape(str(k))}</td><td>{html.escape(str(v))}</td></tr>'
+        f"<tr><td>{html.escape(str(k))}</td><td>{html.escape(str(v))}</td></tr>"
         for k, v in rows
     )
 
@@ -134,47 +137,60 @@ document.getElementById('snd').onclick=async()=>{
 </script></body></html>"""
 
 
+_NOINDEX = {"X-Robots-Tag": "noindex, nofollow", "Cache-Control": "no-store"}
+
+
 async def _page(request: web.Request) -> web.Response:
     token = request.match_info["token"]
-    row = store.get(token)
+    row = db.get_by_token(token)
     if not row:
         return web.Response(text="הקישור אינו תקין או שפג תוקפו.", status=404,
-                            content_type="text/plain")
-    s = row["summary"]
+                            content_type="text/plain", headers=_NOINDEX)
     if row["status"] == "signed":
-        body = (f'<!doctype html><meta charset=utf-8><div dir=rtl '
-                f'style="font-family:system-ui;text-align:center;padding:60px">'
-                f'<div style="font-size:44px">✅</div>'
-                f'<h2>ההצעה כבר אושרה</h2><p style="color:#666">ע"י {html.escape(str(row["signer"]))}</p></div>')
-        return web.Response(text=body, content_type="text/html")
+        body = ('<!doctype html><meta charset=utf-8>'
+                '<meta name=viewport content="width=device-width,initial-scale=1">'
+                '<div dir=rtl style="font-family:system-ui;text-align:center;padding:60px 16px">'
+                '<div style="font-size:44px">✅</div>'
+                '<h2>ההצעה כבר אושרה</h2>'
+                f'<p style="color:#666">ע"י {html.escape(str(row["signer"]))}</p></div>')
+        return web.Response(text=body, content_type="text/html", headers=_NOINDEX)
+    db.mark_viewed(token)
     page = (_PAGE
-            .replace("{rows}", _summary_rows(s))
+            .replace("{rows}", _summary_rows(row))
             .replace("{base}", config.PUBLIC_BASE_URL)
             .replace("{token}", token)
-            .replace("{date}", _dt.date.today().strftime("%d.%m.%Y")))
-    return web.Response(text=page, content_type="text/html")
+            .replace("{date}", db.fmt_ts(row["created_at"], with_time=False)))
+    return web.Response(text=page, content_type="text/html", headers=_NOINDEX)
+
+
+def _pdf_response(path, filename: str) -> web.Response:
+    return web.Response(
+        body=path.read_bytes(), content_type="application/pdf",
+        headers={
+            "Content-Disposition": 'inline; filename="quote.pdf"; filename*=UTF-8\'\''
+                                   + _urlquote(filename),
+            **_NOINDEX,
+        },
+    )
 
 
 async def _pdf(request: web.Request) -> web.Response:
-    token = request.match_info["token"]
-    row = store.get(token)
+    row = db.get_by_token(request.match_info["token"])
     if not row:
         return web.Response(status=404, text="not found")
-    name = row.get("signed_pdf") or row["pdf"]
-    path = config.OUTPUT_DIR / name
-    if not path.exists():
-        path = config.OUTPUT_DIR / row["pdf"]
-    if not path.exists():
+    signed = bool(row.get("signed_pdf"))
+    path = db.path_of(row["signed_pdf"] if signed else row["pdf"])
+    if not path or not path.exists():
+        path = await pdfs.ensure_pdf(row)
+        signed = False
+    if not path or not path.exists():
         return web.Response(status=404, text="missing file")
-    return web.Response(
-        body=path.read_bytes(), content_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="quote.pdf"'},
-    )
+    return _pdf_response(path, db.nice_filename(row, signed=signed))
 
 
 async def _sign(request: web.Request) -> web.Response:
     token = request.match_info["token"]
-    row = store.get(token)
+    row = db.get_by_token(token)
     if not row:
         return web.json_response({"ok": False, "error": "קישור לא תקין"}, status=404)
     if row["status"] == "signed":
@@ -189,30 +205,32 @@ async def _sign(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"ok": False, "error": "נתונים חסרים"}, status=400)
 
-    src = config.OUTPUT_DIR / row["pdf"]
-    signed_name = src.stem + " - חתום.pdf"
-    signed_path = config.OUTPUT_DIR / signed_name
+    src = await pdfs.ensure_pdf(row)
+    if not src:
+        return web.json_response({"ok": False, "error": "קובץ ההצעה לא נמצא"}, status=500)
+    signed_name = f"q{row['id']}_signed.pdf"
+    signed_path = db.path_of(signed_name)
     try:
         stamp_signature(src, signed_path, png)
     except Exception:
         log.exception("stamp failed")
         return web.json_response({"ok": False, "error": "שגיאה בהחתמה"}, status=500)
 
-    store.mark_signed(token, name, signed_name)
+    row = db.mark_signed(token, name, signed_name) or row
 
     tg_app = request.app["tg_app"]
-    when = _dt.datetime.now().strftime("%H:%M %d.%m.%Y")
-    biz = row["summary"].get("business_name", "")
+    when = db.fmt_ts(row.get("signed_at") or int(time.time()))
+    biz = row["business_name"]
+    nice = db.nice_filename(row, signed=True)
     try:
         await tg_app.bot.send_message(
             row["chat_id"],
-            f"✅ *{name}* אישר/ה וחתם/ה על ההצעה של ‏{biz}‏\nזמן: {when}",
+            f"✅ *{name}* אישר/ה וחתם/ה על ההצעה של ‏{biz}‏ (#{row['id']})\nזמן: {when}",
             parse_mode="Markdown",
         )
         with open(signed_path, "rb") as fh:
             await tg_app.bot.send_document(row["chat_id"], document=fh,
-                                          filename=signed_name,
-                                          caption="ההצעה החתומה")
+                                          filename=nice, caption="ההצעה החתומה")
     except Exception:
         log.exception("notify failed")
 
@@ -226,18 +244,128 @@ async def _sign(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+# ── לוח בקרה (/admin) ─────────────────────────────────────────────
+_FAILS: dict[str, list[float]] = {}
+
+
+def _client_ip(request: web.Request) -> str:
+    fwd = request.headers.get("X-Forwarded-For", "")
+    return (fwd.split(",")[0].strip() if fwd else (request.remote or "?")) or "?"
+
+
+def _basic_ok(request: web.Request) -> bool:
+    h = request.headers.get("Authorization", "")
+    if not h.lower().startswith("basic "):
+        return False
+    try:
+        raw = base64.b64decode(h[6:].strip()).decode("utf-8")
+        pw = raw.split(":", 1)[1]
+    except Exception:
+        return False
+    return secrets.compare_digest(pw.encode(), config.ADMIN_PASSWORD.encode())
+
+
+@web.middleware
+async def _admin_guard(request: web.Request, handler):
+    if not request.path.startswith("/admin"):
+        return await handler(request)
+    if not config.ADMIN_PASSWORD:
+        return web.Response(
+            status=503, content_type="text/plain", headers=_NOINDEX,
+            text="לוח הבקרה כבוי. יש להגדיר ADMIN_PASSWORD בהגדרות השרת.")
+    ip = _client_ip(request)
+    now = time.time()
+    recent = [t for t in _FAILS.get(ip, []) if now - t < 600]
+    _FAILS[ip] = recent
+    if len(recent) >= 10:
+        return web.Response(status=429, text="יותר מדי ניסיונות. נסו שוב בעוד כמה דקות.",
+                            content_type="text/plain", headers=_NOINDEX)
+    if not _basic_ok(request):
+        if request.headers.get("Authorization"):
+            _FAILS[ip].append(now)
+            await asyncio.sleep(0.8)
+        return web.Response(
+            status=401, text="נדרשת התחברות", content_type="text/plain",
+            headers={"WWW-Authenticate": 'Basic realm="Migvan quotes", charset="UTF-8"',
+                     **_NOINDEX})
+    if request.method not in ("GET", "HEAD") and request.headers.get("X-Admin") != "1":
+        return web.Response(status=403, text="forbidden")
+    resp = await handler(request)
+    resp.headers.update(_NOINDEX)
+    return resp
+
+
+def _public(row: dict) -> dict:
+    out = {k: row[k] for k in (
+        "id", "business_name", "company_id", "monthly_price", "install_price", "qty",
+        "rights_free", "broadcasts", "created_at", "viewed_at", "signed_at", "signer",
+        "status")}
+    out["link"] = f"{config.PUBLIC_BASE_URL}/q/{row['token']}"
+    out["has_pdf"] = True      # אם הקובץ אבד – מפיקים מחדש בעת הצפייה
+    sp = db.path_of(row.get("signed_pdf"))
+    out["has_signed"] = bool(sp and sp.exists())
+    return out
+
+
+async def _admin_page(request: web.Request) -> web.Response:
+    text = (config.TEMPLATES_DIR / "admin.html").read_text(encoding="utf-8")
+    return web.Response(text=text, content_type="text/html")
+
+
+async def _admin_list(request: web.Request) -> web.Response:
+    status = request.query.get("status") or None
+    q = (request.query.get("q") or "").strip() or None
+    rows = db.list_quotes(status=status, q=q, limit=500)
+    return web.json_response({"counts": db.counts(), "quotes": [_public(r) for r in rows]})
+
+
+async def _admin_pdf(request: web.Request) -> web.Response:
+    try:
+        qid = int(request.match_info["id"])
+    except ValueError:
+        return web.Response(status=404, text="not found")
+    row = db.get(qid)
+    if not row:
+        return web.Response(status=404, text="not found")
+    if request.query.get("signed"):
+        sp = db.path_of(row.get("signed_pdf"))
+        if sp and sp.exists():
+            return _pdf_response(sp, db.nice_filename(row, signed=True))
+        return web.Response(status=404, text="no signed file")
+    path = await pdfs.ensure_pdf(row)
+    if not path:
+        return web.Response(status=404, text="missing file")
+    return _pdf_response(path, db.nice_filename(row))
+
+
+async def _admin_delete(request: web.Request) -> web.Response:
+    try:
+        qid = int(request.match_info["id"])
+    except ValueError:
+        return web.json_response({"ok": False}, status=404)
+    row = db.delete(qid)
+    if not row:
+        return web.json_response({"ok": False}, status=404)
+    log.info("quote #%s (%s) deleted from dashboard", qid, row["business_name"])
+    return web.json_response({"ok": True})
+
+
 async def _health(_):
     return web.Response(text="quote-bot web ok")
 
 
 def make_app(tg_app) -> web.Application:
-    app = web.Application(client_max_size=8 * 1024 * 1024)
+    app = web.Application(client_max_size=8 * 1024 * 1024, middlewares=[_admin_guard])
     app["tg_app"] = tg_app
     app.add_routes([
         web.get("/", _health),
         web.get("/q/{token}", _page),
         web.get("/q/{token}/pdf", _pdf),
         web.post("/q/{token}/sign", _sign),
+        web.get("/admin", _admin_page),
+        web.get("/admin/api/quotes", _admin_list),
+        web.get("/admin/pdf/{id}", _admin_pdf),
+        web.post("/admin/api/delete/{id}", _admin_delete),
     ])
     return app
 
@@ -247,5 +375,6 @@ async def start(tg_app) -> web.AppRunner:
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", config.WEB_PORT)
     await site.start()
-    log.info("sign server on :%s  (public: %s)", config.WEB_PORT, config.PUBLIC_BASE_URL)
+    log.info("web server on :%s  (public: %s, dashboard: %s)", config.WEB_PORT,
+             config.PUBLIC_BASE_URL, "on" if config.ADMIN_PASSWORD else "off")
     return runner

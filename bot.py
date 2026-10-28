@@ -7,6 +7,7 @@ from functools import wraps
 from pathlib import Path
 
 from telegram import (
+    BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
@@ -14,6 +15,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatAction
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -26,8 +28,8 @@ from telegram.ext import (
 )
 
 import config
-import history
-import store
+import db
+import pdfs
 import web as signweb
 from urllib.parse import quote_plus
 from quote import (
@@ -190,7 +192,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`מוזיקה ללא זכויות`\n"
         "`187 לחודש לנגן`\n"
         "`350 התקנה`\n\n"
-        "בסוף אפשר לצרף לוגו של הלקוח כתמונה, ותקבל PDF מוכן.",
+        "בסוף אפשר לצרף לוגו של הלקוח כתמונה, ותקבל PDF מוכן.\n\n"
+        "📋 כל ההצעות, מי חתם ומי לא: /list\n"
+        "🖥️ לוח בקרה באינטרנט: /dashboard",
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardRemove(),
     )
@@ -236,45 +240,238 @@ def _edit_intent(text: str):
     return None
 
 
-def _fmt_hist_row(r: dict) -> str:
-    rt = "ללא זכויות" if r.get("rights_free", True) else "עם זכויות"
-    parts = [r.get("business_name", "?"), rt,
-             f"חודשי {r.get('monthly_price')}", f"התקנה {r.get('install_price')}"]
-    if r.get("qty", 1) > 1:
-        parts.append(f"{r['qty']} נגנים")
-    if r.get("broadcasts"):
-        parts.append(f"תשדירים {r['broadcasts']}")
-    return " · ".join(str(p) for p in parts)
+# ── רשימת הצעות (המאגר) ──────────────────────────────────────────
+PAGE_SIZE = 8
+_STATUS_KEY = {"a": None, "p": "pending", "s": "signed"}
+_STATUS_LABEL = {"a": "הכל", "p": "⏳ ממתינות", "s": "✅ נחתמו"}
+_SEARCH_RE = re.compile(r"^(?:חפש|חיפוש|הצעות\s+של|הצעות\s+ל)\s+(.+)$")
+_PENDING_RE = re.compile(
+    r"^(?:מי\s+(?:עוד\s+)?לא\s+חתם|ממתינות(?:\s+לחתימה)?|הצעות\s+ממתינות|לא\s+חתמו)[\s?!.]*$")
+_SIGNED_RE = re.compile(r"^(?:מי\s+חתם|נחתמו|הצעות\s+חתומות|חתמו)[\s?!.]*$")
+_LIST_RE = re.compile(r"^(?:רשימה|הצעות|כל\s+ההצעות|הצג\s+הצעות)[\s?!.]*$")
+
+
+def _icon(r: dict) -> str:
+    if r["status"] == "signed":
+        return "✅"
+    return "👀" if r.get("viewed_at") else "⏳"
+
+
+def _status_text(r: dict) -> str:
+    if r["status"] == "signed":
+        return f"✅ נחתמה ע\"י {r['signer']} ({db.fmt_ts(r['signed_at'])})"
+    if r.get("viewed_at"):
+        return f"👀 נפתחה ע\"י הלקוח ({db.fmt_ts(r['viewed_at'])}) — ממתינה לחתימה"
+    return "⏳ ממתינה לחתימה"
+
+
+def _list_view(sk: str, offset: int, q):
+    status = _STATUS_KEY[sk]
+    total = db.count(status, q)
+    if total and offset >= total:
+        offset = ((total - 1) // PAGE_SIZE) * PAGE_SIZE
+    offset = max(0, offset)
+    rows = db.list_quotes(status, q, limit=PAGE_SIZE, offset=offset)
+    c = db.counts()
+    text = f"📋 הצעות מחיר  ·  סה\"כ {c['total']}  ·  ✅ {c['signed']}  ·  ⏳ {c['pending']}"
+    if q:
+        text += f"\n🔎 חיפוש: {q}"
+    if not rows:
+        text += "\n\nלא נמצאו הצעות."
+    kb = [[
+        InlineKeyboardButton(("● " if k == sk else "") + _STATUS_LABEL[k], callback_data=f"ls:{k}:0")
+        for k in ("a", "p", "s")
+    ]]
+    for r in rows:
+        d = config.tz_from_ts(r["created_at"]).strftime("%d.%m")
+        kb.append([InlineKeyboardButton(
+            f"{_icon(r)} {r['business_name'][:26]} · {d}",
+            callback_data=f"qd:{r['id']}:{sk}:{offset}")])
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton("⬅️ הקודמים", callback_data=f"ls:{sk}:{max(0, offset - PAGE_SIZE)}"))
+    if offset + PAGE_SIZE < total:
+        nav.append(InlineKeyboardButton("הבאים ➡️", callback_data=f"ls:{sk}:{offset + PAGE_SIZE}"))
+    if nav:
+        kb.append(nav)
+    return text, InlineKeyboardMarkup(kb)
+
+
+def _detail_view(r: dict, sk: str, offset: int):
+    lines = [
+        f"🧾 הצעה #{r['id']} — {r['business_name']}",
+        f"ח.פ: {r['company_id']}" if r.get("company_id") else None,
+        "מסלול: " + ("מוזיקה ללא זכויות" if r["rights_free"] else "מוזיקה רגילה (עם זכויות)"),
+        f"חודשי לנגן: {r['monthly_price']:g} ₪  ·  התקנה: {r['install_price']:g} ₪  ·  נגנים: {r['qty']}",
+        f"שירות תשדירים: {r['broadcasts']} בחודש" if r.get("broadcasts") else None,
+        "",
+        f"הופקה: {db.fmt_ts(r['created_at'])}",
+        _status_text(r),
+    ]
+    text = "\n".join(x for x in lines if x is not None)
+    kb = [[InlineKeyboardButton("📄 PDF", callback_data=f"qp:{r['id']}")]]
+    if r["status"] == "signed":
+        kb[0].append(InlineKeyboardButton("✍️ PDF חתום", callback_data=f"qs:{r['id']}"))
+    elif config.WEB_ENABLED:
+        link = f"{config.PUBLIC_BASE_URL}/q/{r['token']}"
+        wa = quote_plus(f"הצעת מחיר עבור {r['business_name']}\nלצפייה ולאישור: {link}")
+        kb.append([
+            InlineKeyboardButton("🔗 קישור לחתימה", callback_data=f"ql:{r['id']}"),
+            InlineKeyboardButton("📲 וואטסאפ", url=f"https://wa.me/?text={wa}"),
+        ])
+    kb.append([
+        InlineKeyboardButton("📋 שכפל להצעה חדשה", callback_data=f"qc:{r['id']}"),
+        InlineKeyboardButton("🗑 מחק", callback_data=f"qx:{r['id']}:{sk}:{offset}"),
+    ])
+    kb.append([InlineKeyboardButton("⬅️ חזרה לרשימה", callback_data=f"ls:{sk}:{offset}")])
+    return text, InlineKeyboardMarkup(kb)
+
+
+async def _send_list(update, context, sk: str, q=None):
+    context.user_data["lq"] = q
+    text, kb = _list_view(sk, 0, q)
+    await update.effective_message.reply_text(text, reply_markup=kb)
 
 
 @restricted
-async def list_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rows = history.recent(15)
-    if not rows:
-        await update.message.reply_text("אין עדיין הצעות שמורות.")
-        return ConversationHandler.END
-    lines = "\n".join(f"• {_fmt_hist_row(r)}" for r in rows)
+async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _send_list(update, context, "a")
+
+
+@restricted
+async def cmd_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _send_list(update, context, "p")
+
+
+@restricted
+async def cmd_signed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _send_list(update, context, "s")
+
+
+@restricted
+async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not config.WEB_ENABLED:
+        await update.message.reply_text("לוח הבקרה כבוי (השרת לא פועל במצב הזה).")
+        return
+    if not config.ADMIN_PASSWORD:
+        await update.message.reply_text(
+            "לוח הבקרה עדיין לא הופעל.\nצריך להגדיר סיסמה: ב-Railway → Variables → "
+            "הוסף ADMIN_PASSWORD עם סיסמה לבחירתך.")
+        return
+    url = f"{config.PUBLIC_BASE_URL}/admin"
     await update.message.reply_text(
-        "הצעות אחרונות:\n" + lines +
-        "\n\nלשכפול: \"תעשה הצעה כמו <שם> בשם <שם חדש>\""
+        f"🖥️ לוח הבקרה של ההצעות:\n{url}\n\nבחלון ההתחברות: שם משתמש — כל דבר, "
+        "סיסמה — ה-ADMIN_PASSWORD שהגדרת.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("פתח את הלוח", url=url)]]),
+        disable_web_page_preview=True,
     )
-    return ConversationHandler.END
+
+
+async def _safe_edit(q, text, kb):
+    try:
+        await q.edit_message_text(text, reply_markup=kb)
+    except BadRequest as e:                      # "message is not modified"
+        if "not modified" not in str(e).lower():
+            raise
+
+
+async def _send_file(context, chat_id, path, filename, caption=None):
+    with open(path, "rb") as fh:
+        await context.bot.send_document(chat_id, document=fh, filename=filename, caption=caption)
+
+
+@restricted
+async def on_lib(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """כל כפתורי הרשימה/כרטיס ההצעה (ls, qd, qp, qs, ql, qx, qy)."""
+    q = update.callback_query
+    await q.answer()
+    parts = q.data.split(":")
+    act = parts[0]
+    chat_id = q.message.chat_id
+
+    if act == "ls":
+        sk, off = parts[1], int(parts[2])
+        text, kb = _list_view(sk, off, context.user_data.get("lq"))
+        return await _safe_edit(q, text, kb)
+
+    qid = int(parts[1])
+    sk = parts[2] if len(parts) > 2 else "a"
+    off = int(parts[3]) if len(parts) > 3 else 0
+    row = db.get(qid)
+    back = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ חזרה לרשימה", callback_data=f"ls:{sk}:{off}")]])
+    if not row:
+        return await _safe_edit(q, "ההצעה לא נמצאה (אולי נמחקה).", back)
+
+    if act == "qd":
+        text, kb = _detail_view(row, sk, off)
+        return await _safe_edit(q, text, kb)
+
+    if act == "qp":
+        path = await pdfs.ensure_pdf(row)
+        if not path:
+            return await q.message.reply_text("לא הצלחתי להפיק את הקובץ.")
+        return await _send_file(context, chat_id, path, db.nice_filename(row),
+                                caption=f"הצעה #{row['id']} — {row['business_name']}")
+
+    if act == "qs":
+        sp = db.path_of(row.get("signed_pdf"))
+        if not sp or not sp.exists():
+            return await q.message.reply_text("הקובץ החתום לא נמצא.")
+        return await _send_file(context, chat_id, sp, db.nice_filename(row, signed=True),
+                                caption=f"נחתם ע\"י {row['signer']} · {db.fmt_ts(row['signed_at'])}")
+
+    if act == "ql":
+        link = f"{config.PUBLIC_BASE_URL}/q/{row['token']}"
+        return await q.message.reply_text(
+            f"🔗 קישור לחתימה — {row['business_name']}:\n{link}", disable_web_page_preview=True)
+
+    if act == "qx":
+        warn = ("\n\n⚠️ ההצעה חתומה! המחיקה סופית ותמחק גם את הקובץ החתום."
+                if row["status"] == "signed" else "\n\nהמחיקה סופית.")
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🗑 כן, מחק", callback_data=f"qy:{qid}:{sk}:{off}"),
+            InlineKeyboardButton("ביטול", callback_data=f"qd:{qid}:{sk}:{off}"),
+        ]])
+        return await _safe_edit(q, f"למחוק את ההצעה #{row['id']} של \"{row['business_name']}\"?{warn}", kb)
+
+    if act == "qy":
+        gone = db.delete(qid)
+        log.info("quote #%s deleted via bot", qid)
+        return await _safe_edit(q, f"🗑 ההצעה של \"{gone['business_name']}\" נמחקה.", back)
+
+
+@restricted
+async def on_clone_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """כפתור 'שכפל להצעה חדשה' – מתחיל שיחה עם הנתונים של ההצעה הקיימת."""
+    q = update.callback_query
+    await q.answer()
+    row = db.get(int(q.data.split(":")[1]))
+    if not row:
+        await q.message.reply_text("ההצעה לא נמצאה (אולי נמחקה).")
+        return ConversationHandler.END
+    context.user_data.clear()
+    d = _d(context)
+    for k in ("monthly_price", "install_price", "qty", "rights_free", "broadcasts"):
+        d[k] = row[k]
+    d["_cloned_from"] = row["business_name"]
+    await q.message.reply_text(f"משכפל את ההצעה של \"{row['business_name']}\" — מה שם העסק החדש?")
+    return await advance(update, context)
 
 
 def _resolve_ref(ref_name: str, new_name):
     """מחזיר (row, new_name). אם השם המלא לא נמצא – מנסה לפצל '<ref> ל<new>'."""
-    row = history.find_quote(ref_name)
+    row = db.find_by_name(ref_name)
     if row or new_name:
         return row, new_name
     # אין new_name ולא נמצא – ננסה למצוא נקודת פיצול בתוך ref_name
     m = _SPLIT_MARK.match(ref_name)
-    if m and history.find_quote(m.group(1)):
-        return history.find_quote(m.group(1)), m.group(2).strip(" -,\t")
+    if m and db.find_by_name(m.group(1)):
+        return db.find_by_name(m.group(1)), m.group(2).strip(" -,\t")
     # פיצול הדרגתי לפי רווחים (הקידומת הכי ארוכה שנמצאת)
     words = ref_name.split()
     for i in range(len(words) - 1, 0, -1):
         cand = " ".join(words[:i])
-        hit = history.find_quote(cand)
+        hit = db.find_by_name(cand)
         if hit:
             tail = " ".join(words[i:])
             tail = re.sub(r"^(?:אבל\s+|ו?רק\s+|עבור\s+|בשביל\s+|ל(?=[א-ת]))", "", tail)
@@ -287,7 +484,7 @@ async def _handle_clone(update, context, ref_name, new_name, overrides):
     d = _d(context)
     row, new_name = _resolve_ref(ref_name, new_name)
     if not row:
-        rows = history.recent(10)
+        rows = db.recent(10)
         hint = ("\n\nהצעות קיימות:\n" +
                 "\n".join(f"• {r.get('business_name')}" for r in rows)) if rows else ""
         await update.message.reply_text(
@@ -321,6 +518,22 @@ async def quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
     if _is_cancel(text):
         return await cancel(update, context)
+
+    # רשימה / חיפוש / סטטוס בטקסט חופשי ("מי לא חתם?", "חפש פנטו") – לא נוגע בהצעה הנוכחית
+    st = text.strip()
+    if _PENDING_RE.match(st):
+        await _send_list(update, context, "p")
+        return ConversationHandler.END
+    if _SIGNED_RE.match(st):
+        await _send_list(update, context, "s")
+        return ConversationHandler.END
+    if _LIST_RE.match(st):
+        await _send_list(update, context, "a")
+        return ConversationHandler.END
+    m = _SEARCH_RE.match(st)
+    if m:
+        await _send_list(update, context, "a", q=m.group(1).strip())
+        return ConversationHandler.END
 
     # בקשת שכפול: "תעשה הצעה כמו פנטו אנג'וי אבל בשם X"
     clone = parse_clone_request(text)
@@ -520,39 +733,41 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         address=d.get("address", "") or "",
         logo_path=d.get("logo_path"),
     )
-    out_path = config.OUTPUT_DIR / data.filename()
+
+    # רשומה במאגר: תיקון של הצעה שעדיין לא נחתמה מעדכן אותה (אותו קישור);
+    # אחרת (הצעה חדשה / הצעה שכבר נחתמה) נוצרת רשומה חדשה.
+    rec, created = None, False
+    qid = d.get("_quote_id")
+    if qid:
+        old = db.get(qid)
+        if old and old["status"] == "pending":
+            rec = db.update_data(qid, data)
+    if rec is None:
+        rec, created = db.create(chat_id=chat.id, data=data), True
+    data.date_str = db.date_str_of(rec)
+
+    pdf_name = f"q{rec['id']}.pdf"
+    out_path = config.DATA_DIR / pdf_name
     try:
         await render_pdf(data, out_path)
     except Exception as e:  # noqa: BLE001
         log.exception("render failed")
+        if created:
+            db.delete(rec["id"])
         await context.bot.send_message(chat.id, f"אירעה שגיאה בהפקת ההצעה:\n{e}")
         return ConversationHandler.END
+    db.set_pdf(rec["id"], pdf_name)
+    d["_quote_id"] = rec["id"]
 
-    with open(out_path, "rb") as fh:
-        await context.bot.send_document(
-            chat.id, document=fh, filename=data.filename(),
-            caption=(f"הצעת מחיר עבור {data.business_name}\n"
-                     f"תאריך: {data.date_str}"),
-        )
-    try:
-        history.save_quote(data)
-    except Exception:
-        log.exception("history save failed")
+    await _send_file(
+        context, chat.id, out_path, db.nice_filename(rec),
+        caption=f"הצעת מחיר #{rec['id']} עבור {data.business_name}\nתאריך: {data.date_str}",
+    )
 
     # קישור חתימה לשליחה בוואטסאפ
     if config.WEB_ENABLED:
         try:
-            token = store.create(
-                pdf_name=out_path.name, chat_id=chat.id,
-                summary=dict(
-                    business_name=data.business_name,
-                    monthly_price=data.monthly_price,
-                    install_price=data.install_price,
-                    qty=data.qty, rights_free=data.rights_free,
-                    broadcasts=data.broadcasts,
-                ),
-            )
-            link = f"{config.PUBLIC_BASE_URL}/q/{token}"
+            link = f"{config.PUBLIC_BASE_URL}/q/{rec['token']}"
             wa_text = quote_plus(
                 f"הצעת מחיר עבור {data.business_name}\nלצפייה ולאישור: {link}"
             )
@@ -571,9 +786,10 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(
         chat.id,
-        "מוכן ✅\n"
+        "מוכן ✅  (נשמר במאגר כהצעה #%d)\n"
         "• לתקן ולשלוח שוב: כתוב למשל `שם: ...` / `התקנה: 400` / `כמות: 3`\n"
-        "• הצעה חדשה: /new    • רשימת לקוחות: /list",
+        "• הצעה חדשה: /new\n"
+        "• כל ההצעות ומי חתם: /list   • לוח בקרה: /dashboard" % rec["id"],
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardRemove(),
     )
@@ -591,6 +807,18 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _post_init(app: Application) -> None:
+    try:
+        await app.bot.set_my_commands([
+            BotCommand("new", "הצעה חדשה"),
+            BotCommand("list", "כל ההצעות"),
+            BotCommand("pending", "ממתינות לחתימה"),
+            BotCommand("signed", "נחתמו"),
+            BotCommand("dashboard", "לוח בקרה"),
+            BotCommand("cancel", "ביטול"),
+        ])
+    except Exception:
+        log.exception("set_my_commands failed")
+    log.info("data dir: %s  (quotes in DB: %s)", config.DATA_DIR, db.counts())
     if config.WEB_ENABLED:
         try:
             app.bot_data["_web_runner"] = await signweb.start(app)
@@ -625,7 +853,7 @@ def build_application() -> Application:
         entry_points=[
             CommandHandler("new", new_quote),
             CommandHandler("start", start),
-            CommandHandler("list", list_history),
+            CallbackQueryHandler(on_clone_cb, pattern=r"^qc:"),
             MessageHandler(text_only, quick),
         ],
         states={
@@ -644,12 +872,17 @@ def build_application() -> Application:
             CommandHandler("cancel", cancel),
             CommandHandler("new", new_quote),
             CommandHandler("start", start),
-            CommandHandler("list", list_history),
         ],
         name="quote_conv",
         persistent=True,
     )
     app.add_handler(conv)
+    # רשימת ההצעות עובדת גם באמצע שיחה, בלי להפריע לה
+    app.add_handler(CommandHandler("list", cmd_list))
+    app.add_handler(CommandHandler("pending", cmd_pending))
+    app.add_handler(CommandHandler("signed", cmd_signed))
+    app.add_handler(CommandHandler("dashboard", cmd_dashboard))
+    app.add_handler(CallbackQueryHandler(on_lib, pattern=r"^(ls|qd|qp|qs|ql|qx|qy):"))
     return app
 
 
