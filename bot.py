@@ -23,6 +23,7 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler,
     MessageHandler,
+    PersistenceInput,
     PicklePersistence,
     filters,
 )
@@ -806,6 +807,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+_STATE: dict = {}      # לא בתוך bot_data: הוא נשמר לדיסק, ושרת האתר לא ניתן לשמירה
+
+
 async def _post_init(app: Application) -> None:
     try:
         await app.bot.set_my_commands([
@@ -821,13 +825,13 @@ async def _post_init(app: Application) -> None:
     log.info("data dir: %s  (quotes in DB: %s)", config.DATA_DIR, db.counts())
     if config.WEB_ENABLED:
         try:
-            app.bot_data["_web_runner"] = await signweb.start(app)
+            _STATE["web_runner"] = await signweb.start(app)
         except Exception:
             log.exception("web server failed to start")
 
 
 async def _post_shutdown(app: Application) -> None:
-    runner = app.bot_data.get("_web_runner")
+    runner = _STATE.get("web_runner")
     if runner is not None:
         await runner.cleanup()
 
@@ -837,7 +841,9 @@ def build_application() -> Application:
         raise SystemExit("חסר BOT_TOKEN. הגדר אותו בקובץ .env")
 
     persistence = PicklePersistence(
-        filepath=str(config.OUTPUT_DIR / "bot_state.pkl")
+        filepath=str(config.OUTPUT_DIR / "bot_state.pkl"),
+        # שומרים רק מצב שיחה ונתוני משתמש (לא bot_data/chat_data)
+        store_data=PersistenceInput(bot_data=False, chat_data=False, callback_data=False),
     )
     app = (
         Application.builder()
