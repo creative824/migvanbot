@@ -130,7 +130,10 @@ _RENTAL_WORD = re.compile(r"חצי\s+שנה|שנתיים")
 _RENTAL_NOISE = re.compile(r"(?<![א-ת])(?:תקופת|שכירות|מינימלית|התחייבות|רק|של|ל)(?![א-ת])")
 _NO_LOGO = re.compile(r"(?:ללא|בלי|אין)\s+לוגו")
 _LOGO_RE = re.compile(r"(?:(?:עם|תוסיף|תוסיפי|הוסף|הוסיפי|בליווי|וגם)\s+)?לוגו")
-_BROADCAST_ADDON_WORDS = re.compile(r"תוספת|במידה|לשלב|אופציונל")
+# "מחיר עם תשדירים" = המחיר החודשי לנגן כשכוללים שירות תשדירים (מחיר חלופי, לא תוספת על המחיר)
+_BROADCAST_ADDON_WORDS = re.compile(
+    r"תוספת|במידה|לשלב|אופציונל|(?:עם|כולל)\s+(?:שירות\s+)?תשדיר")
+_NO_BROADCAST = re.compile(r"(?:בלי|ללא|אין)\s+(?:שירות\s+)?תשדיר\S*")
 _MONEY_WORDS = re.compile(r"₪|ש\"ח|ש״ח|שקל", re.I)
 
 
@@ -155,7 +158,7 @@ def rights_in(line: str):
 
 
 def broadcast_kind(line: str, num: float) -> str:
-    """'addon' = מחיר תוספת תשדירים, 'count' = כמות תשדירים בחודש."""
+    """'addon' = המחיר החודשי כשכוללים תשדירים, 'count' = כמות תשדירים בחודש."""
     if _BROADCAST_ADDON_WORDS.search(line) or _MONEY_WORDS.search(line):
         return "addon"
     if re.search(r"בחודש|לחודש|עד\s*\d", line):
@@ -271,8 +274,6 @@ _DIRECTIVES = [
         r"^(?:מחיר\s*)?התקנ\S*(?:\s*לנגן)?" + _SEP + r"([\d][\d.,]*)")),
     ("qty", re.compile(
         r"^(?:כמות|מספר)\s*(?:נגנים|הנגנים)?" + _SEP + r"(\d+)")),
-    ("broadcasts", re.compile(
-        r"^(?:תוספת\s*)?(?:שירות\s*)?תשדיר\S*(?:\s*(?:עד|של))?" + _SEP + r"([\d][\d.,]*)")),
 ]
 
 
@@ -342,18 +343,24 @@ def parse_directives(text: str) -> dict:
                     out[field] = n
             elif field == "qty":
                 out[field] = max(1, int(parse_number(val) or 1))
-            elif field == "broadcasts":
-                n = parse_number(val) or 0
-                if broadcast_kind(ln, n) == "addon":
-                    out["broadcast_addon"] = float(n)
-                else:
-                    out["broadcasts"] = max(0, int(n))
             elif field == "company_id":
                 out[field] = val.replace(" ", "")
             else:
                 if val:
                     out[field] = val
             break
+        else:
+            # שורה על תשדירים: "140 בלי תשדירים" / "199 עם תשדירים" / "תשדירים 4 בחודש"
+            if _BROADCAST_HINT.search(ln):
+                mnum = re.search(r"\d[\d.,]*", ln)
+                n = parse_number(mnum.group(0)) if mnum else None
+                if n is not None:
+                    if _NO_BROADCAST.search(ln):
+                        out["monthly_price"] = n
+                    elif broadcast_kind(ln, n) == "addon":
+                        out["broadcast_addon"] = float(n)
+                    else:
+                        out["broadcasts"] = max(0, int(n))
     return out
 
 
@@ -385,15 +392,19 @@ def parse_free_text(text: str) -> tuple[dict, list[str]]:
         low = work.lower()
         num = parse_number(work)
 
-        if num is not None and _MONTHLY_HINT.search(low) and "monthly_price" not in values:
-            values["monthly_price"] = num
-            continue
+        # שורות על תשדירים קודם לכל (כדי ש"199 לחודש עם תשדירים" לא ייקלט כמחיר הרגיל)
         if num is not None and _BROADCAST_HINT.search(low):
-            if broadcast_kind(work, num) == "addon":
+            if _NO_BROADCAST.search(low):                 # "140 בלי תשדירים" = המחיר הרגיל
+                if "monthly_price" not in values:
+                    values["monthly_price"] = num
+            elif broadcast_kind(work, num) == "addon":    # "199 עם תשדירים" = מחיר עם תשדירים
                 if "broadcast_addon" not in values:
                     values["broadcast_addon"] = float(num)
-            elif "broadcasts" not in values:
+            elif "broadcasts" not in values:              # "4 תשדירים בחודש" = כמות
                 values["broadcasts"] = int(num)
+            continue
+        if num is not None and _MONTHLY_HINT.search(low) and "monthly_price" not in values:
+            values["monthly_price"] = num
             continue
         if num is not None and _INSTALL_HINT.search(low) and "install_price" not in values:
             values["install_price"] = num

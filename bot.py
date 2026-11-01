@@ -94,7 +94,7 @@ _FIELD_HE = {
     "business_name": "שם", "company_id": "ח.פ",
     "monthly_price": "מחיר חודשי לנגן", "install_price": "מחיר התקנה לנגן",
     "qty": "כמות נגנים", "rights_free": "סוג מוזיקה", "broadcasts": "שירות תשדירים",
-    "broadcast_addon": "תוספת לשילוב תשדירים", "rental_months": "תקופת שכירות",
+    "broadcast_addon": "מחיר עם שירות תשדירים", "rental_months": "תקופת שכירות",
     "want_logo": "לוגו",
 }
 _TRACKED = list(_FIELD_HE) + ["rights_both"]
@@ -258,14 +258,14 @@ _FIELD_WORDS = [
     ("install_price", re.compile(r"התקנ")),
     ("qty", re.compile(r"כמות|נגנים")),
     ("rights_free", re.compile(r"זכויות|מסלול")),
-    ("broadcast_addon", re.compile(r"תוספת")),
+    ("broadcast_addon", re.compile(r"תוספת|עם\s+תשדיר|מחיר\s+עם")),
     ("broadcasts", re.compile(r"תשדיר")),
     ("rental_months", re.compile(r"שכירות|תקופת|התחייבות")),
     ("logo", re.compile(r"לוגו")),
 ]
 _OPTIONAL_HINTS = {
     "broadcasts": "כדי לשנות/להוסיף שירות תשדירים כתוב למשל: תשדירים 4 בחודש",
-    "broadcast_addon": "כדי לשנות/להוסיף תוספת תשדירים כתוב למשל: תוספת תשדירים 199",
+    "broadcast_addon": "כדי לשנות/להוסיף את המחיר עם תשדירים כתוב למשל: 199 עם תשדירים",
     "rental_months": "כדי לשנות את תקופת השכירות כתוב למשל: תקופת שכירות 6 חודשים",
 }
 
@@ -346,7 +346,7 @@ def _detail_view(r: dict, sk: str, offset: int):
         + (f"התקנה: {r['install_price']:g} ₪" if r["install_price"] else "ללא התקנה")
         + f"  ·  נגנים: {r['qty']}",
         f"שירות תשדירים: {r['broadcasts']} בחודש" if r.get("broadcasts") else None,
-        f"תוספת לשילוב תשדירים: {r['broadcast_addon']:g} ₪" if r.get("broadcast_addon") else None,
+        f"מחיר חודשי לנגן עם שירות תשדירים: {r['broadcast_addon']:g} ₪" if r.get("broadcast_addon") else None,
         f"תקופת שכירות: {months_label(r['rental_months'])}" if r.get("rental_months", 12) != 12 else None,
         "",
         f"הופקה: {db.fmt_ts(r['created_at'])}",

@@ -38,7 +38,7 @@ def _summary_rows(s: dict) -> str:
     if s.get("broadcasts"):
         rows.append(("שירות תשדירים", f'{s["broadcasts"]} בחודש'))
     if s.get("broadcast_addon"):
-        rows.append(("תוספת לשילוב שירות תשדירים", f'{float(s["broadcast_addon"]):g} ₪'))
+        rows.append(("מחיר חודשי לנגן עם שירות תשדירים", f'{float(s["broadcast_addon"]):g} ₪'))
     if int(s.get("rental_months") or 12) != 12:
         rows.append(("תקופת שכירות מינימלית", months_label(int(s["rental_months"]))))
     if qty > 1:

@@ -119,7 +119,7 @@ function card(r){
     r.rights_both?'ללא זכויות / עם זכויות':(r.rights_free?'ללא זכויות':'מוזיקה רגילה')
   ];
   if(r.broadcasts) chips.push(`תשדירים ${r.broadcasts} בחודש`);
-  if(r.broadcast_addon) chips.push(`תוספת תשדירים ${money(r.broadcast_addon)}`);
+  if(r.broadcast_addon) chips.push(`עם תשדירים ${money(r.broadcast_addon)}`);
   if(r.rental_months && r.rental_months!==12) chips.push(`שכירות ${r.rental_months} חודשים`);
   if(r.qty>1) chips.push(`סה"כ חודשי ${money(r.monthly_price*r.qty)}`);
   const waText=encodeURIComponent(`הצעת מחיר עבור ${r.business_name}\nלצפייה ולאישור: ${r.link}`);
