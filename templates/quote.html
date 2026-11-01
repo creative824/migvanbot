@@ -253,13 +253,13 @@
       <tbody>
         <tr>
           <td>מערכת MIGVAN AUDIO PRO כולל סטרימר בהשאלה, אין צורך במחשב!</td>
-          <td class="value"><span class="money">{{ monthly_price }} ₪</span> מחיר חודשי לנגן{% if broadcast_addon %} (מחיר רשתי){% endif %}.<br>{{ track_label }}.{% if broadcast_addon %}<br><span class="money">{{ broadcast_addon }} ₪</span> במידה ורוצים לשלב שירות תשדירים.{% endif %}</td>
+          <td class="value">{% if broadcast_addon %}<span class="money">{{ monthly_price }} ₪</span> מחיר חודשי לנגן {{ track_in }}<br><span class="money">{{ broadcast_addon }} ₪</span> במסלול כולל תשדירים{% if broadcasts %} (עד {{ broadcasts }} בחודש){% endif %}{% else %}<span class="money">{{ monthly_price }} ₪</span> מחיר חודשי לנגן.<br>{{ track_label }}.{% endif %}</td>
         </tr>
         <tr class="hl">
           <td>עריכת מוזיקה לפי קו מוזיקלי שיאופיין על ידי העורך המוזיקלי של מגוון, כולל התאמת פלייליסטים בהתאם לכל בית עסק</td>
           <td><strong>כלול - כולל עשרות סגנונות ואלפי שירים בהתאמה ועריכה אישית ללקוח</strong> ע"י עורך מוזיקלי מקצועי הצמוד ללקוח</td>
         </tr>
-        {% if broadcasts %}
+        {% if broadcasts and not broadcast_addon %}
         <tr>
           <td>שירות תשדירים – תשדירי מבצע וכלליים עד {{ broadcasts }} בחודש</td>
           <td>כלול - יבוצעו על ידי קרייני מגוון כולל מאסטרינג ועריכה</td>
@@ -321,12 +321,6 @@
         <td>סה"כ עלות חודשית לכל הנגנים (לפני מע"מ)</td>
         <td>{{ monthly_total }} ₪</td>
       </tr>
-      {% if not no_install %}
-      <tr class="total">
-        <td>סה"כ עלות התקנה חד-פעמית לכל הנגנים (לפני מע"מ)</td>
-        <td>{{ install_total }} ₪</td>
-      </tr>
-      {% endif %}
       {% endif %}
     </table>
 

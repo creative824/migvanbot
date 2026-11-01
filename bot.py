@@ -345,8 +345,10 @@ def _detail_view(r: dict, sk: str, offset: int):
         f"חודשי לנגן: {r['monthly_price']:g} ₪  ·  "
         + (f"התקנה: {r['install_price']:g} ₪" if r["install_price"] else "ללא התקנה")
         + f"  ·  נגנים: {r['qty']}",
-        f"שירות תשדירים: {r['broadcasts']} בחודש" if r.get("broadcasts") else None,
-        f"מחיר חודשי לנגן עם שירות תשדירים: {r['broadcast_addon']:g} ₪" if r.get("broadcast_addon") else None,
+        (f"מחיר חודשי לנגן עם שירות תשדירים: {r['broadcast_addon']:g} ₪"
+         + (f" (עד {r['broadcasts']} בחודש)" if r.get("broadcasts") else ""))
+        if r.get("broadcast_addon")
+        else (f"שירות תשדירים: {r['broadcasts']} בחודש" if r.get("broadcasts") else None),
         f"תקופת שכירות: {months_label(r['rental_months'])}" if r.get("rental_months", 12) != 12 else None,
         "",
         f"הופקה: {db.fmt_ts(r['created_at'])}",

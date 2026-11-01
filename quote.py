@@ -111,6 +111,7 @@ class QuoteData:
             no_install=self.no_install,
             rental_label=months_label(self.rental_months),
             track_label=track_label(self.rights_free, self.rights_both),
+            track_in="ב" + track_label(self.rights_free, self.rights_both),
         )
 
 
@@ -164,6 +165,33 @@ def broadcast_kind(line: str, num: float) -> str:
     if re.search(r"בחודש|לחודש|עד\s*\d", line):
         return "count"
     return "addon" if num >= 40 else "count"
+
+
+def parse_broadcast_numbers(line: str):
+    """
+    משורה על תשדירים מחזיר (מחיר חודשי כולל תשדירים | None, כמות תשדירים בחודש | None).
+    "תשדירים 199 4 בחודש" -> (199, 4);  "199 עם תשדירים" -> (199, None);  "תשדירים 4 בחודש" -> (None, 4)
+    """
+    nums = [parse_number(x) for x in re.findall(r"\d[\d,]*(?:\.\d+)?", line)]
+    nums = [n for n in nums if n is not None]
+    if not nums:
+        return None, None
+    cm = re.search(r"(\d+)\s*(?:תשדירים\s*)?(?:ב|ל)חודש", line) or re.search(r"עד\s*(\d+)", line)
+    count = int(cm.group(1)) if cm else None
+    if count is not None and count > 60:        # "199 לחודש עם תשדירים" – זה מחיר, לא כמות
+        count = None
+    if len(nums) >= 2:
+        if count is not None:
+            rest = [n for n in nums if int(n) != count] or nums[:1]
+            return float(rest[0]), count
+        return float(max(nums)), int(min(nums))
+    n = nums[0]
+    if count is not None:
+        return None, count
+    return (float(n), None) if broadcast_kind(line, n) == "addon" else (None, int(n))
+
+
+_UP_TO_RE = re.compile(r"עד\s*(\d+)\s*(?:ב|ל)חודש")
 
 
 def scan_flags(line: str, out: dict, override: bool = False) -> str:
@@ -351,16 +379,20 @@ def parse_directives(text: str) -> dict:
             break
         else:
             # שורה על תשדירים: "140 בלי תשדירים" / "199 עם תשדירים" / "תשדירים 4 בחודש"
-            if _BROADCAST_HINT.search(ln):
-                mnum = re.search(r"\d[\d.,]*", ln)
-                n = parse_number(mnum.group(0)) if mnum else None
-                if n is not None:
-                    if _NO_BROADCAST.search(ln):
-                        out["monthly_price"] = n
-                    elif broadcast_kind(ln, n) == "addon":
-                        out["broadcast_addon"] = float(n)
-                    else:
-                        out["broadcasts"] = max(0, int(n))
+            mu = _UP_TO_RE.fullmatch(ln)
+            if mu:
+                out["broadcasts"] = int(mu.group(1))
+            elif _BROADCAST_HINT.search(ln):
+                if _NO_BROADCAST.search(ln):
+                    mnum = re.search(r"\d[\d.,]*", ln)
+                    if mnum and parse_number(mnum.group(0)) is not None:
+                        out["monthly_price"] = parse_number(mnum.group(0))
+                else:
+                    price, count = parse_broadcast_numbers(ln)
+                    if price is not None:
+                        out["broadcast_addon"] = price
+                    if count is not None:
+                        out["broadcasts"] = count
     return out
 
 
@@ -392,16 +424,23 @@ def parse_free_text(text: str) -> tuple[dict, list[str]]:
         low = work.lower()
         num = parse_number(work)
 
+        # "עד 4 בחודש" בשורה נפרדת = כמות התשדירים
+        mu = _UP_TO_RE.fullmatch(work.strip())
+        if mu:
+            if "broadcasts" not in values:
+                values["broadcasts"] = int(mu.group(1))
+            continue
         # שורות על תשדירים קודם לכל (כדי ש"199 לחודש עם תשדירים" לא ייקלט כמחיר הרגיל)
         if num is not None and _BROADCAST_HINT.search(low):
             if _NO_BROADCAST.search(low):                 # "140 בלי תשדירים" = המחיר הרגיל
                 if "monthly_price" not in values:
                     values["monthly_price"] = num
-            elif broadcast_kind(work, num) == "addon":    # "199 עם תשדירים" = מחיר עם תשדירים
-                if "broadcast_addon" not in values:
-                    values["broadcast_addon"] = float(num)
-            elif "broadcasts" not in values:              # "4 תשדירים בחודש" = כמות
-                values["broadcasts"] = int(num)
+            else:                                         # "תשדירים 199 4 בחודש" = מחיר + כמות
+                price, count = parse_broadcast_numbers(work)
+                if price is not None and "broadcast_addon" not in values:
+                    values["broadcast_addon"] = price
+                if count is not None and "broadcasts" not in values:
+                    values["broadcasts"] = count
             continue
         if num is not None and _MONTHLY_HINT.search(low) and "monthly_price" not in values:
             values["monthly_price"] = num
@@ -432,6 +471,8 @@ def parse_free_text(text: str) -> tuple[dict, list[str]]:
         if n is None:
             continue
         if _INSTALL_HINT.search(low) or _QTY_HINT.search(low) or _BROADCAST_HINT.search(low):
+            continue
+        if _UP_TO_RE.fullmatch(work.strip()):     # "עד 4 בחודש" = כמות תשדירים, לא מחיר
             continue
         if _ID_RE.fullmatch(work.replace(" ", "")):
             continue

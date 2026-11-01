@@ -35,16 +35,15 @@ def _summary_rows(s: dict) -> str:
         ("מחיר התקנה לנגן", f"{ip:g} ₪" if ip else "ללא התקנה (משלוח הנגן בלבד)"),
         ("כמות נגנים", qty),
     ]
-    if s.get("broadcasts"):
-        rows.append(("שירות תשדירים", f'{s["broadcasts"]} בחודש'))
     if s.get("broadcast_addon"):
-        rows.append(("מחיר חודשי לנגן עם שירות תשדירים", f'{float(s["broadcast_addon"]):g} ₪'))
+        cnt = f' (עד {s["broadcasts"]} בחודש)' if s.get("broadcasts") else ""
+        rows.append(("מחיר חודשי לנגן עם שירות תשדירים", f'{float(s["broadcast_addon"]):g} ₪{cnt}'))
+    elif s.get("broadcasts"):
+        rows.append(("שירות תשדירים", f'{s["broadcasts"]} בחודש'))
     if int(s.get("rental_months") or 12) != 12:
         rows.append(("תקופת שכירות מינימלית", months_label(int(s["rental_months"]))))
     if qty > 1:
         rows.append(('סה"כ חודשי (לפני מע"מ)', f"{mp * qty:g} ₪"))
-        if ip:
-            rows.append(('סה"כ התקנה (לפני מע"מ)', f"{ip * qty:g} ₪"))
     return "".join(
         f"<tr><td>{html.escape(str(k))}</td><td>{html.escape(str(v))}</td></tr>"
         for k, v in rows
