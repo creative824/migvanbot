@@ -14,6 +14,7 @@ from aiohttp import web
 import config
 import db
 import pdfs
+from quote import months_label
 from render import stamp_signature
 from email_send import send_signed_agreement
 
@@ -21,21 +22,29 @@ log = logging.getLogger("quote-bot.web")
 
 
 def _summary_rows(s: dict) -> str:
-    rt = "מוזיקה ללא זכויות" if s.get("rights_free", True) else "מוזיקה רגילה (עם זכויות)"
+    if s.get("rights_both"):
+        rt = "מוזיקה ללא זכויות / עם זכויות (לבחירת הלקוח)"
+    else:
+        rt = "מוזיקה ללא זכויות" if s.get("rights_free", True) else "מוזיקה רגילה (עם זכויות)"
     qty = int(s.get("qty") or 1)
     mp, ip = float(s.get("monthly_price") or 0), float(s.get("install_price") or 0)
     rows = [
         ("עסק", s.get("business_name", "")),
         ("מסלול", rt),
         ("מחיר חודשי לנגן", f"{mp:g} ₪"),
-        ("מחיר התקנה לנגן", f"{ip:g} ₪"),
+        ("מחיר התקנה לנגן", f"{ip:g} ₪" if ip else "ללא התקנה (משלוח הנגן בלבד)"),
         ("כמות נגנים", qty),
     ]
     if s.get("broadcasts"):
         rows.append(("שירות תשדירים", f'{s["broadcasts"]} בחודש'))
+    if s.get("broadcast_addon"):
+        rows.append(("תוספת לשילוב שירות תשדירים", f'{float(s["broadcast_addon"]):g} ₪'))
+    if int(s.get("rental_months") or 12) != 12:
+        rows.append(("תקופת שכירות מינימלית", months_label(int(s["rental_months"]))))
     if qty > 1:
         rows.append(('סה"כ חודשי (לפני מע"מ)', f"{mp * qty:g} ₪"))
-        rows.append(('סה"כ התקנה (לפני מע"מ)', f"{ip * qty:g} ₪"))
+        if ip:
+            rows.append(('סה"כ התקנה (לפני מע"מ)', f"{ip * qty:g} ₪"))
     return "".join(
         f"<tr><td>{html.escape(str(k))}</td><td>{html.escape(str(v))}</td></tr>"
         for k, v in rows
@@ -298,8 +307,8 @@ async def _admin_guard(request: web.Request, handler):
 def _public(row: dict) -> dict:
     out = {k: row[k] for k in (
         "id", "business_name", "company_id", "monthly_price", "install_price", "qty",
-        "rights_free", "broadcasts", "created_at", "viewed_at", "signed_at", "signer",
-        "status")}
+        "rights_free", "rights_both", "broadcasts", "broadcast_addon", "rental_months",
+        "created_at", "viewed_at", "signed_at", "signer", "status")}
     out["link"] = f"{config.PUBLIC_BASE_URL}/q/{row['token']}"
     out["has_pdf"] = True      # אם הקובץ אבד – מפיקים מחדש בעת הצפייה
     sp = db.path_of(row.get("signed_pdf"))

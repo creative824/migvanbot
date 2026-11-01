@@ -32,8 +32,11 @@ import config
 import db
 import pdfs
 import web as signweb
+import shutil
 from urllib.parse import quote_plus
 from quote import (
+    months_label,
+    scan_flags,
     QuoteData,
     parse_free_text,
     parse_directives,
@@ -56,7 +59,7 @@ log = logging.getLogger("quote-bot")
 (BUSINESS, COMPANY_ID, MONTHLY, INSTALL, QTY, RIGHTS, LOGO) = range(7)
 
 FIELD_ORDER = ["business_name", "company_id", "monthly_price",
-               "install_price", "qty", "rights_free", "logo"]
+               "install_price", "qty", "rights_free"]
 STATE_OF = {
     "business_name": BUSINESS, "company_id": COMPANY_ID,
     "monthly_price": MONTHLY, "install_price": INSTALL, "qty": QTY,
@@ -91,14 +94,33 @@ _FIELD_HE = {
     "business_name": "שם", "company_id": "ח.פ",
     "monthly_price": "מחיר חודשי לנגן", "install_price": "מחיר התקנה לנגן",
     "qty": "כמות נגנים", "rights_free": "סוג מוזיקה", "broadcasts": "שירות תשדירים",
+    "broadcast_addon": "תוספת לשילוב תשדירים", "rental_months": "תקופת שכירות",
+    "want_logo": "לוגו",
 }
+_TRACKED = list(_FIELD_HE) + ["rights_both"]
 
 
-def _fmt_val(k, v):
+def _rights_label(r) -> str:
+    """r = מילון (נתוני שיחה או רשומה): ללא זכויות / עם זכויות / שניהם."""
+    if r.get("rights_both"):
+        return "ללא זכויות / עם זכויות (לבחירת הלקוח)"
+    return "מוזיקה ללא זכויות" if r.get("rights_free", True) else "מוזיקה רגילה (עם זכויות)"
+
+
+def _fmt_val(k, v, d=None):
+    d = d or {}
     if k == "rights_free":
-        return "מוזיקה ללא זכויות" if v else "מוזיקה עם זכויות"
+        return _rights_label(d) if d else ("מוזיקה ללא זכויות" if v else "מוזיקה עם זכויות")
     if k == "broadcasts":
         return f"{v} בחודש" if v else "ללא"
+    if k == "install_price":
+        return f"{float(v):g} ₪" if v else "ללא התקנה (משלוח הנגן בלבד)"
+    if k == "broadcast_addon":
+        return f"{float(v):g} ₪"
+    if k == "rental_months":
+        return months_label(int(v))
+    if k == "want_logo":
+        return "אבקש ממך לשלוח אותו"
     return v
 
 
@@ -108,20 +130,30 @@ def _absorb_message(context, text: str) -> list[str]:
     מחזיר רשימת שדות שהשתנו (ערכים חדשים גוברים על קיימים).
     """
     d = _d(context)
-    before = {k: d.get(k) for k in _FIELD_HE}
+    before = {k: d.get(k) for k in _TRACKED}
+    incoming = {}
     if "\n" in text or _looks_like_details(text):
         vals, _ = parse_free_text(text)
         for k, v in vals.items():
             if v not in ("", None):
-                d[k] = v
-    for k, v in parse_directives(text).items():
-        d[k] = v
-    return [k for k in _FIELD_HE if d.get(k) != before.get(k) and d.get(k) not in ("", None)]
+                incoming[k] = v
+    incoming.update(parse_directives(text))
+    if "want_logo" in incoming:                   # ביקשו לוגו -> נשאל שוב (גם אם כבר דילגו)
+        d.pop("logo_done", None)
+    d.update(incoming)
+    changed = []
+    for k in _TRACKED:
+        if k == "rights_both":
+            if bool(d.get(k)) != bool(before.get(k)):
+                changed.append("rights_free")
+        elif d.get(k) != before.get(k) and d.get(k) not in ("", None):
+            changed.append(k)
+    return list(dict.fromkeys(changed))
 
 
 async def _report_changes(update, context, changed: list[str]):
     d = _d(context)
-    lines = [f"{_FIELD_HE.get(k, k)}: {_fmt_val(k, d[k])}" for k in changed]
+    lines = [f"{_FIELD_HE.get(k, k)}: {_fmt_val(k, d.get(k), d)}" for k in changed]
     await update.effective_message.reply_text("✏️ עודכן —\n• " + "\n• ".join(lines))
 
 
@@ -148,19 +180,20 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE, field: str):
     elif field == "monthly_price":
         await msg.reply_text("💰 מחיר עלות חודשית לנגן (בש\"ח, לפני מע\"מ):")
     elif field == "install_price":
-        await msg.reply_text("🔧 מחיר התקנה לנגן (בש\"ח, לפני מע\"מ):")
+        await msg.reply_text("🔧 מחיר התקנה לנגן (בש\"ח, לפני מע\"מ)?  (או שלח \"ללא\" / 0 אם אין התקנה)")
     elif field == "qty":
         await msg.reply_text("🎛️ כמה נגנים?  (מספר)")
     elif field == "rights_free":
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🎵 מוזיקה ללא זכויות", callback_data="rights_free")],
             [InlineKeyboardButton("🎼 מוזיקה עם זכויות", callback_data="rights_paid")],
+            [InlineKeyboardButton("🎵🎼 שניהם (לבחירת הלקוח)", callback_data="rights_both")],
         ])
         await msg.reply_text("איזה סוג מוזיקה?", reply_markup=kb)
     elif field == "logo":
         await msg.reply_text(
-            "🖼️ רוצה לצרף לוגו של הלקוח? שלח עכשיו תמונה.\n"
-            "אם לא — שלח \"דלג\" ואפיק את ההצעה."
+            "🖼️ שלח עכשיו את הלוגו של הלקוח (כתמונה).\n"
+            "אם התחרטת — שלח \"דלג\" ואפיק את ההצעה בלי."
         )
     return STATE_OF[field]
 
@@ -169,12 +202,11 @@ async def advance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """מוצא את השדה הבא שחסר, שואל עליו, ואם הכל מלא – מפיק PDF."""
     d = _d(context)
     for field in FIELD_ORDER:
-        if field == "logo":
-            if "logo_done" not in d:
-                return await ask(update, context, "logo")
-            continue
         if field not in d:
             return await ask(update, context, field)
+    # לוגו – רק אם ביקשו (הוזכרה המילה "לוגו")
+    if d.get("want_logo") and "logo_done" not in d:
+        return await ask(update, context, "logo")
     return await generate(update, context)
 
 
@@ -226,9 +258,16 @@ _FIELD_WORDS = [
     ("install_price", re.compile(r"התקנ")),
     ("qty", re.compile(r"כמות|נגנים")),
     ("rights_free", re.compile(r"זכויות|מסלול")),
+    ("broadcast_addon", re.compile(r"תוספת")),
     ("broadcasts", re.compile(r"תשדיר")),
+    ("rental_months", re.compile(r"שכירות|תקופת|התחייבות")),
     ("logo", re.compile(r"לוגו")),
 ]
+_OPTIONAL_HINTS = {
+    "broadcasts": "כדי לשנות/להוסיף שירות תשדירים כתוב למשל: תשדירים 4 בחודש",
+    "broadcast_addon": "כדי לשנות/להוסיף תוספת תשדירים כתוב למשל: תוספת תשדירים 199",
+    "rental_months": "כדי לשנות את תקופת השכירות כתוב למשל: תקופת שכירות 6 חודשים",
+}
 
 
 def _edit_intent(text: str):
@@ -302,9 +341,13 @@ def _detail_view(r: dict, sk: str, offset: int):
     lines = [
         f"🧾 הצעה #{r['id']} — {r['business_name']}",
         f"ח.פ: {r['company_id']}" if r.get("company_id") else None,
-        "מסלול: " + ("מוזיקה ללא זכויות" if r["rights_free"] else "מוזיקה רגילה (עם זכויות)"),
-        f"חודשי לנגן: {r['monthly_price']:g} ₪  ·  התקנה: {r['install_price']:g} ₪  ·  נגנים: {r['qty']}",
+        "מסלול: " + _rights_label(r),
+        f"חודשי לנגן: {r['monthly_price']:g} ₪  ·  "
+        + (f"התקנה: {r['install_price']:g} ₪" if r["install_price"] else "ללא התקנה")
+        + f"  ·  נגנים: {r['qty']}",
         f"שירות תשדירים: {r['broadcasts']} בחודש" if r.get("broadcasts") else None,
+        f"תוספת לשילוב תשדירים: {r['broadcast_addon']:g} ₪" if r.get("broadcast_addon") else None,
+        f"תקופת שכירות: {months_label(r['rental_months'])}" if r.get("rental_months", 12) != 12 else None,
         "",
         f"הופקה: {db.fmt_ts(r['created_at'])}",
         _status_text(r),
@@ -452,7 +495,8 @@ async def on_clone_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     context.user_data.clear()
     d = _d(context)
-    for k in ("monthly_price", "install_price", "qty", "rights_free", "broadcasts"):
+    for k in ("monthly_price", "install_price", "qty", "rights_free", "rights_both",
+              "broadcasts", "broadcast_addon", "rental_months"):
         d[k] = row[k]
     d["_cloned_from"] = row["business_name"]
     await q.message.reply_text(f"משכפל את ההצעה של \"{row['business_name']}\" — מה שם העסק החדש?")
@@ -493,7 +537,8 @@ async def _handle_clone(update, context, ref_name, new_name, overrides):
         )
         return ConversationHandler.END
 
-    for k in ("monthly_price", "install_price", "qty", "rights_free", "broadcasts"):
+    for k in ("monthly_price", "install_price", "qty", "rights_free", "rights_both",
+              "broadcasts", "broadcast_addon", "rental_months"):
         if row.get(k) is not None:
             d[k] = row[k]
     d.update(overrides)                       # שינויי מחיר/כמות שנכתבו בהודעה
@@ -548,6 +593,9 @@ async def quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         edits = parse_directives(text)
         if edits:                                    # ניתן ערך מפורש -> מעדכן ומפיק
             prev.pop("_done", None)
+            if "want_logo" in edits:                 # "לוגו" אחרי שנשלחה הצעה -> מבקשים לוגו
+                prev.pop("logo_done", None)
+                prev.pop("logo_path", None)
             changed = []
             for k, v in edits.items():
                 if prev.get(k) != v:
@@ -559,10 +607,16 @@ async def quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await advance(update, context)
 
         field = _edit_intent(text)                   # "רוצה לתקן את השם" -> שואל ערך
+        if field in _OPTIONAL_HINTS:                 # שדות אופציונליים: מסבירים איך לכתוב
+            await update.message.reply_text(_OPTIONAL_HINTS[field])
+            return ConversationHandler.END
         if field:
             prev.pop("_done", None)
             prev.pop(field, None)
+            if field == "rights_free":
+                prev.pop("rights_both", None)
             if field == "logo":
+                prev["want_logo"] = True
                 prev.pop("logo_done", None)
                 prev.pop("logo_path", None)
             return await advance(update, context)
@@ -572,7 +626,9 @@ async def quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not _looks_like_details(text):
         # שורה בודדת – אם היא לא "רעש", ניקח אותה כשם העסק
-        one = strip_lead(text)
+        flags: dict = {}
+        one = scan_flags(strip_lead(text), flags)
+        d.update(flags)
         if one:
             d["business_name"] = one
             await update.message.reply_text(f"שם: {one} ✏️")
@@ -583,14 +639,8 @@ async def quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     values, missing = parse_free_text(text)
     d.update(values)
 
-    got = []
-    if "business_name" in d: got.append(f"שם: {d['business_name']}")
-    if "company_id" in d: got.append(f"ח.פ: {d['company_id']}")
-    if "monthly_price" in d: got.append(f"חודשי לנגן: {parse_number(str(d['monthly_price']))}")
-    if "install_price" in d: got.append(f"התקנה לנגן: {parse_number(str(d['install_price']))}")
-    if "qty" in d: got.append(f"כמות נגנים: {d['qty']}")
-    if "rights_free" in d:
-        got.append("מוזיקה ללא זכויות" if d["rights_free"] else "מוזיקה עם זכויות")
+    got = [f"{_FIELD_HE[k]}: {_fmt_val(k, d[k], d)}"
+           for k in _FIELD_HE if k in d and d[k] not in ("", None)]
     if got:
         await update.message.reply_text("קלטתי:\n• " + "\n• ".join(got))
     return await advance(update, context)
@@ -658,6 +708,13 @@ async def on_monthly(update, context):
 
 
 async def on_install(update, context):
+    txt = update.message.text.strip()
+    if not _is_cancel(txt) and (
+        txt.lower() in SKIP_WORDS or txt in ("0", "אפס")
+        or re.search(r"(?:ללא|בלי|אין)\s*התקנ", txt)
+    ):
+        _d(context)["install_price"] = 0.0           # אין התקנה – רק משלוח הנגן
+        return await advance(update, context)
     return await _store_number(update, context, "install_price", "מחיר ההתקנה")
 
 
@@ -679,10 +736,10 @@ async def on_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_rights(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    _d(context)["rights_free"] = (q.data == "rights_free")
-    await q.edit_message_text(
-        "✅ מוזיקה ללא זכויות" if _d(context)["rights_free"] else "✅ מוזיקה עם זכויות"
-    )
+    d = _d(context)
+    d["rights_free"] = q.data != "rights_paid"
+    d["rights_both"] = q.data == "rights_both"
+    await q.edit_message_text("✅ " + _rights_label(d))
     return await advance(update, context)
 
 
@@ -730,7 +787,10 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         install_price=float(d["install_price"]),
         qty=int(d.get("qty", 1)),
         rights_free=bool(d.get("rights_free", True)),
+        rights_both=bool(d.get("rights_both", False)),
         broadcasts=int(d.get("broadcasts", 0) or 0),
+        broadcast_addon=float(d.get("broadcast_addon", 0) or 0),
+        rental_months=int(d.get("rental_months", 12) or 12),
         address=d.get("address", "") or "",
         logo_path=d.get("logo_path"),
     )
@@ -746,6 +806,16 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if rec is None:
         rec, created = db.create(chat_id=chat.id, data=data), True
     data.date_str = db.date_str_of(rec)
+
+    # לוגו: שומרים עותק פר-הצעה (כדי שאפשר יהיה להפיק מחדש גם מהלוח)
+    logo_src = d.get("logo_path")
+    if logo_src and Path(logo_src).exists():
+        logo_name = f"logo_q{rec['id']}{Path(logo_src).suffix or '.jpg'}"
+        logo_dst = db.path_of(logo_name)
+        if logo_dst and Path(logo_src).resolve() != logo_dst.resolve():
+            shutil.copyfile(logo_src, logo_dst)
+        db.set_logo(rec["id"], logo_name)
+        data.logo_path = str(logo_dst)
 
     pdf_name = f"q{rec['id']}.pdf"
     out_path = config.DATA_DIR / pdf_name

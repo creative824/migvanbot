@@ -21,7 +21,11 @@ def quote_data_of(row: dict) -> QuoteData:
         install_price=float(row["install_price"] or 0),
         qty=int(row.get("qty") or 1),
         rights_free=bool(row.get("rights_free")),
+        rights_both=bool(row.get("rights_both")),
         broadcasts=int(row.get("broadcasts") or 0),
+        broadcast_addon=float(row.get("broadcast_addon") or 0),
+        rental_months=int(row.get("rental_months") or 12),
+        logo_path=(str(lp) if (lp := db.path_of(row.get("logo"))) and lp.exists() else None),
         date_str=db.date_str_of(row),
     )
 

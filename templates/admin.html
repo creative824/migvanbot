@@ -113,11 +113,14 @@ function card(r){
                viewed:'<span class="badge b-viewed">👀 נפתחה · ממתינה</span>',
                pending:'<span class="badge b-pending">⏳ ממתינה לחתימה</span>'}[st];
   const chips=[
-    `${money(r.monthly_price)} לחודש לנגן`,`התקנה ${money(r.install_price)}`,
+    `${money(r.monthly_price)} לחודש לנגן`,
+    r.install_price?`התקנה ${money(r.install_price)}`:'ללא התקנה',
     `${r.qty} ${r.qty===1?'נגן':'נגנים'}`,
-    r.rights_free?'ללא זכויות':'מוזיקה רגילה'
+    r.rights_both?'ללא זכויות / עם זכויות':(r.rights_free?'ללא זכויות':'מוזיקה רגילה')
   ];
   if(r.broadcasts) chips.push(`תשדירים ${r.broadcasts} בחודש`);
+  if(r.broadcast_addon) chips.push(`תוספת תשדירים ${money(r.broadcast_addon)}`);
+  if(r.rental_months && r.rental_months!==12) chips.push(`שכירות ${r.rental_months} חודשים`);
   if(r.qty>1) chips.push(`סה"כ חודשי ${money(r.monthly_price*r.qty)}`);
   const waText=encodeURIComponent(`הצעת מחיר עבור ${r.business_name}\nלצפייה ולאישור: ${r.link}`);
   const times=`<div><dt>הופקה</dt><dd>${fmtDate(r.created_at)}</dd></div>`+

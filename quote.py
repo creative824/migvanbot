@@ -29,6 +29,25 @@ def parse_number(text: str) -> float | None:
     return float(m.group()) if m else None
 
 
+def months_label(n: int) -> str:
+    n = int(n)
+    if n == 1:
+        return "חודש אחד"
+    if n == 2:
+        return "חודשיים"
+    return f"{n} חודשים"
+
+
+def track_label(rights_free: bool, rights_both: bool = False) -> str:
+    """נוסח המסלול בשורת המחיר הראשונה."""
+    suffix = "כולל עריכת מוזיקה בהתאמה אישית"
+    if rights_both:
+        return f"מסלול מוזיקה ללא זכויות/עם זכויות (לבחירת הלקוח) {suffix}"
+    if rights_free:
+        return f"מסלול מוזיקה ללא זכויות {suffix}"
+    return f"מסלול מוזיקה רגילה {suffix}"
+
+
 @dataclass
 class QuoteData:
     business_name: str
@@ -37,7 +56,10 @@ class QuoteData:
     install_price: float = 0.0
     qty: int = 1
     rights_free: bool = True          # True = מוזיקה ללא זכויות
+    rights_both: bool = False         # True = "ללא זכויות/עם זכויות (לבחירת הלקוח)"
     broadcasts: int = 0               # שירות תשדירים בחודש (0 = לא להציג שורה)
+    broadcast_addon: float = 0.0      # תוספת מחיר לשילוב שירות תשדירים (0 = אין)
+    rental_months: int = 12           # תקופת שכירות מינימלית
     address: str = ""
     logo_path: str | None = None
     date_str: str = ""
@@ -47,6 +69,9 @@ class QuoteData:
             self.date_str = today_str()
         self.qty = max(1, int(self.qty))
         self.broadcasts = max(0, int(self.broadcasts or 0))
+        self.broadcast_addon = max(0.0, float(self.broadcast_addon or 0))
+        self.rental_months = max(1, int(self.rental_months or 12))
+        self.rights_both = bool(self.rights_both)
 
     # ── סכומים ──────────────────────────────────────────────
     @property
@@ -63,6 +88,10 @@ class QuoteData:
         date_iso = config.tz_now().date().isoformat()
         return f"הצעת מחיר - {safe} - {date_iso}.pdf"
 
+    @property
+    def no_install(self) -> bool:
+        return not self.install_price
+
     # ── הקשר לתבנית ────────────────────────────────────────
     def template_context(self) -> dict:
         return dict(
@@ -76,22 +105,108 @@ class QuoteData:
             monthly_total=fmt_money(self.monthly_total),
             install_total=fmt_money(self.install_total),
             rights_free=self.rights_free,
+            rights_both=self.rights_both,
             broadcasts=self.broadcasts,
-            track_label=(
-                "מסלול מוזיקה ללא זכויות כולל עריכת מוזיקה בהתאמה אישית"
-                if self.rights_free
-                else "מסלול מוזיקה רגילה כולל עריכת מוזיקה בהתאמה אישית"
-            ),
+            broadcast_addon=fmt_money(self.broadcast_addon) if self.broadcast_addon else "",
+            no_install=self.no_install,
+            rental_label=months_label(self.rental_months),
+            track_label=track_label(self.rights_free, self.rights_both),
         )
 
 
 # ── פענוח הודעה חופשית מרובת-שורות ──────────────────────────────
 _RIGHTS_FREE_DET = re.compile(r"ללא\s*זכויות|בלי\s*זכויות|no[\s-]*rights")
-_RIGHTS_PAID_DET = re.compile(r"עם\s*זכויות|בר[ת]?\s*זכויות|בעלת\s*זכויות|with[\s-]*rights")
+_RIGHTS_PAID_DET = re.compile(
+    r"עם\s*זכויות|בר[ת]?\s*זכויות|בעלת\s*זכויות|מוזיקה\s+רגיל[הת]?|with[\s-]*rights")
+_RIGHTS_BOTH_DET = re.compile(r"גם\s*וגם|שניהם|לבחירת\s*הלקוח|עם\s+ו(?:ללא|בלי)\s+זכויות")
 # להסרה מתוך שורה (למשל כשהשם והסוג באותה שורה)
 _RIGHTS_STRIP = re.compile(
-    r"\s*(מוזיקה\s+)?(ללא|בלי|עם|בר[ת]?|בעלת)\s+זכויות(\s+דרך\s+מגוון)?\s*"
+    r"\s*(?:(?:מוזיקה\s+)?(?:ללא|בלי|עם|בר[ת]?|בעלת)\s+זכויות(?:\s+דרך\s+מגוון)?|מוזיקה\s+רגיל[הת]?)\s*"
 )
+_BOTH_STRIP = re.compile(r"\s*\(?\s*(?:גם\s*וגם|שניהם|לבחירת\s*הלקוח)\s*\)?\s*")
+_NO_INSTALL = re.compile(r"(?:ללא|בלי|אין)\s+התקנ\S*")
+_RENTAL_NUM = re.compile(r"(\d+)\s*חודשים")
+_RENTAL_WORD = re.compile(r"חצי\s+שנה|שנתיים")
+_RENTAL_NOISE = re.compile(r"(?<![א-ת])(?:תקופת|שכירות|מינימלית|התחייבות|רק|של|ל)(?![א-ת])")
+_NO_LOGO = re.compile(r"(?:ללא|בלי|אין)\s+לוגו")
+_LOGO_RE = re.compile(r"(?:(?:עם|תוסיף|תוסיפי|הוסף|הוסיפי|בליווי|וגם)\s+)?לוגו")
+_BROADCAST_ADDON_WORDS = re.compile(r"תוספת|במידה|לשלב|אופציונל")
+_MONEY_WORDS = re.compile(r"₪|ש\"ח|ש״ח|שקל", re.I)
+
+
+def clean_rights(text: str) -> str:
+    """מסיר מהשורה ביטויי סוג מוזיקה (כולל 'לבחירת הלקוח') ושאריות פיסוק."""
+    t = _BOTH_STRIP.sub(" ", text)
+    t = _RIGHTS_STRIP.sub(" ", t)
+    return t.strip(" -,\t/\\()")
+
+
+def rights_in(line: str):
+    """'both' / 'free' / 'paid' / None לפי הניסוח בשורה."""
+    free = bool(_RIGHTS_FREE_DET.search(line))
+    paid = bool(_RIGHTS_PAID_DET.search(line))
+    if (free and paid) or _RIGHTS_BOTH_DET.search(line):
+        return "both"
+    if free:
+        return "free"
+    if paid:
+        return "paid"
+    return None
+
+
+def broadcast_kind(line: str, num: float) -> str:
+    """'addon' = מחיר תוספת תשדירים, 'count' = כמות תשדירים בחודש."""
+    if _BROADCAST_ADDON_WORDS.search(line) or _MONEY_WORDS.search(line):
+        return "addon"
+    if re.search(r"בחודש|לחודש|עד\s*\d", line):
+        return "count"
+    return "addon" if num >= 40 else "count"
+
+
+def scan_flags(line: str, out: dict, override: bool = False) -> str:
+    """
+    מזהה בשורה "דגלים" (סוג מוזיקה, לוגו, תקופת שכירות, ללא התקנה), רושם אותם ל-out
+    ומחזיר את מה שנשאר מהשורה (השם / מחיר וכד').
+    """
+    def put(key, val):
+        if override or key not in out:
+            out[key] = val
+
+    work = line
+
+    r = rights_in(work)
+    if r == "both":
+        put("rights_both", True); put("rights_free", True)
+    elif r == "free":
+        put("rights_free", True); put("rights_both", False)
+    elif r == "paid":
+        put("rights_free", False); put("rights_both", False)
+    if r:
+        work = clean_rights(work)
+
+    if _NO_LOGO.search(work):
+        work = _NO_LOGO.sub(" ", work).strip(" -,\t")
+    elif _LOGO_RE.search(work):
+        put("want_logo", True)
+        work = _LOGO_RE.sub(" ", work).strip(" -,\t")
+
+    m = _RENTAL_NUM.search(work)
+    if m:
+        put("rental_months", int(m.group(1)))
+        work = _RENTAL_NUM.sub(" ", work)
+        work = _RENTAL_NOISE.sub(" ", work).strip(" -,:\t")
+    else:
+        m = _RENTAL_WORD.search(work)
+        if m:
+            put("rental_months", 24 if "שנתיים" in m.group(0) else 6)
+            work = _RENTAL_WORD.sub(" ", work)
+            work = _RENTAL_NOISE.sub(" ", work).strip(" -,:\t")
+
+    if _NO_INSTALL.search(work):
+        put("install_price", 0.0)
+        work = _NO_INSTALL.sub(" ", work).strip(" -,\t")
+
+    return work.strip()
 _MONTHLY_HINT = re.compile(r"חודש|לחודש|חודשי|monthly|לנגן")
 _INSTALL_HINT = re.compile(r"התקנ|install")
 _QTY_HINT = re.compile(r"כמות|נגנים|מכשיר|יחיד")
@@ -157,7 +272,7 @@ _DIRECTIVES = [
     ("qty", re.compile(
         r"^(?:כמות|מספר)\s*(?:נגנים|הנגנים)?" + _SEP + r"(\d+)")),
     ("broadcasts", re.compile(
-        r"^(?:שירות\s*)?תשדיר\S*(?:\s*(?:עד|של))?" + _SEP + r"(\d+)")),
+        r"^(?:תוספת\s*)?(?:שירות\s*)?תשדיר\S*(?:\s*(?:עד|של))?" + _SEP + r"([\d][\d.,]*)")),
 ]
 
 
@@ -215,10 +330,7 @@ def parse_directives(text: str) -> dict:
         ln = raw.strip()
         if not ln:
             continue
-        if _RIGHTS_FREE_DET.search(ln):
-            out["rights_free"] = True
-        elif _RIGHTS_PAID_DET.search(ln):
-            out["rights_free"] = False
+        scan_flags(ln, out, override=True)
         for field, rx in _DIRECTIVES:
             m = rx.match(ln)
             if not m:
@@ -231,7 +343,11 @@ def parse_directives(text: str) -> dict:
             elif field == "qty":
                 out[field] = max(1, int(parse_number(val) or 1))
             elif field == "broadcasts":
-                out[field] = max(0, int(parse_number(val) or 0))
+                n = parse_number(val) or 0
+                if broadcast_kind(ln, n) == "addon":
+                    out["broadcast_addon"] = float(n)
+                else:
+                    out["broadcasts"] = max(0, int(n))
             elif field == "company_id":
                 out[field] = val.replace(" ", "")
             else:
@@ -261,13 +377,8 @@ def parse_free_text(text: str) -> tuple[dict, list[str]]:
     for ln in body_lines:
         work = ln
 
-        # סוג מוזיקה – מזהים, ומסירים את הביטוי מהשורה כדי לא לאבד שם עסק
-        if "rights_free" not in values:
-            if _RIGHTS_FREE_DET.search(work):
-                values["rights_free"] = True
-            elif _RIGHTS_PAID_DET.search(work):
-                values["rights_free"] = False
-        work = _RIGHTS_STRIP.sub(" ", work).strip(" -,\t")
+        # דגלים: סוג מוזיקה, לוגו, תקופת שכירות, ללא התקנה – מזהים ומסירים מהשורה
+        work = scan_flags(work, values)
         if not work:
             continue
 
@@ -277,8 +388,12 @@ def parse_free_text(text: str) -> tuple[dict, list[str]]:
         if num is not None and _MONTHLY_HINT.search(low) and "monthly_price" not in values:
             values["monthly_price"] = num
             continue
-        if num is not None and _BROADCAST_HINT.search(low) and "broadcasts" not in values:
-            values["broadcasts"] = int(num)
+        if num is not None and _BROADCAST_HINT.search(low):
+            if broadcast_kind(work, num) == "addon":
+                if "broadcast_addon" not in values:
+                    values["broadcast_addon"] = float(num)
+            elif "broadcasts" not in values:
+                values["broadcasts"] = int(num)
             continue
         if num is not None and _INSTALL_HINT.search(low) and "install_price" not in values:
             values["install_price"] = num
@@ -300,7 +415,7 @@ def parse_free_text(text: str) -> tuple[dict, list[str]]:
     # מספרים "יתומים" שלא סווגו — נשייך לפי הסדר: חודשי, ואז התקנה
     orphan_nums = []
     for ln in body_lines:
-        work = _RIGHTS_STRIP.sub(" ", ln).strip(" -,\t")
+        work = scan_flags(ln, {})
         low = work.lower()
         n = parse_number(work)
         if n is None:

@@ -30,7 +30,11 @@ CREATE TABLE IF NOT EXISTS quotes (
     status        TEXT DEFAULT 'pending',
     viewed_at     INTEGER,
     signed_at     INTEGER,
-    signer        TEXT
+    signer        TEXT,
+    rights_both     INTEGER DEFAULT 0,
+    broadcast_addon REAL DEFAULT 0,
+    rental_months   INTEGER DEFAULT 12,
+    logo            TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_quotes_created ON quotes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_quotes_status ON quotes(status);
@@ -48,9 +52,21 @@ def _conn():
         con.close()
 
 
+_NEW_COLUMNS = {
+    "rights_both": "INTEGER DEFAULT 0",
+    "broadcast_addon": "REAL DEFAULT 0",
+    "rental_months": "INTEGER DEFAULT 12",
+    "logo": "TEXT",
+}
+
+
 def init() -> None:
     with _conn() as c:
         c.executescript(SCHEMA)
+        have = {r["name"] for r in c.execute("PRAGMA table_info(quotes)")}
+        for col, ddl in _NEW_COLUMNS.items():          # מיגרציה לבסיסי נתונים קיימים
+            if col not in have:
+                c.execute(f"ALTER TABLE quotes ADD COLUMN {col} {ddl}")
 
 
 init()
@@ -62,8 +78,11 @@ def _row(r: sqlite3.Row | None) -> dict | None:
         return None
     d = dict(r)
     d["rights_free"] = bool(d.get("rights_free"))
+    d["rights_both"] = bool(d.get("rights_both"))
     d["qty"] = int(d.get("qty") or 1)
     d["broadcasts"] = int(d.get("broadcasts") or 0)
+    d["broadcast_addon"] = float(d.get("broadcast_addon") or 0)
+    d["rental_months"] = int(d.get("rental_months") or 12)
     return d
 
 
@@ -106,11 +125,13 @@ def create(*, chat_id: int | None, data) -> dict:
     with _conn() as c:
         cur = c.execute(
             """INSERT INTO quotes (token, created_at, chat_id, business_name, company_id,
-                   monthly_price, install_price, qty, rights_free, broadcasts)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                   monthly_price, install_price, qty, rights_free, broadcasts,
+                   rights_both, broadcast_addon, rental_months)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (token, int(time.time()), chat_id, data.business_name, data.company_id or "",
              data.monthly_price, data.install_price, data.qty,
-             1 if data.rights_free else 0, data.broadcasts),
+             1 if data.rights_free else 0, data.broadcasts,
+             1 if data.rights_both else 0, data.broadcast_addon, data.rental_months),
         )
         qid = cur.lastrowid
     return get(qid)
@@ -121,11 +142,13 @@ def update_data(qid: int, data) -> dict | None:
     with _conn() as c:
         c.execute(
             """UPDATE quotes SET business_name=?, company_id=?, monthly_price=?,
-                   install_price=?, qty=?, rights_free=?, broadcasts=?
+                   install_price=?, qty=?, rights_free=?, broadcasts=?,
+                   rights_both=?, broadcast_addon=?, rental_months=?
                WHERE id=?""",
             (data.business_name, data.company_id or "", data.monthly_price,
              data.install_price, data.qty, 1 if data.rights_free else 0,
-             data.broadcasts, qid),
+             data.broadcasts, 1 if data.rights_both else 0, data.broadcast_addon,
+             data.rental_months, qid),
         )
     return get(qid)
 
@@ -133,6 +156,11 @@ def update_data(qid: int, data) -> dict | None:
 def set_pdf(qid: int, pdf_name: str) -> None:
     with _conn() as c:
         c.execute("UPDATE quotes SET pdf=? WHERE id=?", (pdf_name, qid))
+
+
+def set_logo(qid: int, logo_name: str | None) -> None:
+    with _conn() as c:
+        c.execute("UPDATE quotes SET logo=? WHERE id=?", (logo_name, qid))
 
 
 def mark_viewed(token: str) -> None:
@@ -160,7 +188,7 @@ def delete(qid: int) -> dict | None:
         return None
     with _conn() as c:
         c.execute("DELETE FROM quotes WHERE id=?", (qid,))
-    for name in (row.get("pdf"), row.get("signed_pdf")):
+    for name in (row.get("pdf"), row.get("signed_pdf"), row.get("logo")):
         p = path_of(name)
         if p and p.exists():
             try:
