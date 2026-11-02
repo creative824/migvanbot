@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import logging
 from pathlib import Path
 
@@ -14,26 +15,28 @@ log = logging.getLogger("quote-bot.email")
 RESEND_URL = "https://api.resend.com/emails"
 
 
-async def send_signed_agreement(*, business_name: str, signer: str, pdf_path: str | Path) -> bool:
+async def send_signed_agreement(*, business_name: str, signer: str, pdf_path: str | Path,
+                                filename: str | None = None) -> bool:
     """שולח מייל עם ה-PDF החתום מצורף. מחזיר True אם נשלח בהצלחה."""
     if not (config.RESEND_API_KEY and config.NOTIFY_EMAIL):
         log.info("email skipped: RESEND_API_KEY/NOTIFY_EMAIL not configured")
         return False
 
     pdf_path = Path(pdf_path)
+    biz, who = html.escape(business_name), html.escape(signer)
     payload = {
         "from": config.EMAIL_FROM,
         "to": [config.NOTIFY_EMAIL],
         "subject": f'קיבלת הסכם חתום מ"{business_name}"',
         "html": (
             "<div dir='rtl' style='font-family:Arial,sans-serif;font-size:15px'>"
-            f"<p>ההסכם / הצעת המחיר עבור <b>{business_name}</b> נחתם/ה ע\"י "
-            f"<b>{signer}</b>.</p>"
+            f"<p>ההסכם / הצעת המחיר עבור <b>{biz}</b> נחתם/ה ע\"י "
+            f"<b>{who}</b>.</p>"
             "<p>הקובץ החתום מצורף להודעה זו.</p>"
             "</div>"
         ),
         "attachments": [{
-            "filename": pdf_path.name,
+            "filename": filename or pdf_path.name,
             "content": base64.b64encode(pdf_path.read_bytes()).decode("ascii"),
         }],
     }

@@ -243,7 +243,8 @@ async def _sign(request: web.Request) -> web.Response:
         log.exception("notify failed")
 
     try:
-        sent = await send_signed_agreement(business_name=biz, signer=name, pdf_path=signed_path)
+        sent = await send_signed_agreement(business_name=biz, signer=name, pdf_path=signed_path,
+                                           filename=nice)
         if sent:
             await tg_app.bot.send_message(row["chat_id"], f"📧 נשלח גם למייל {config.NOTIFY_EMAIL}")
     except Exception:
