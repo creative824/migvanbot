@@ -14,7 +14,7 @@ from aiohttp import web
 import config
 import db
 import pdfs
-from quote import months_label
+from quote import FOREIGN_NOTE, months_label
 from render import stamp_signature
 from email_send import send_signed_agreement
 
@@ -24,8 +24,10 @@ log = logging.getLogger("quote-bot.web")
 def _summary_rows(s: dict) -> str:
     if s.get("rights_both"):
         rt = "מוזיקה ללא זכויות / עם זכויות (לבחירת הלקוח)"
+    elif s.get("rights_free", True):
+        rt = "מוזיקה ללא זכויות"
     else:
-        rt = "מוזיקה ללא זכויות" if s.get("rights_free", True) else "מוזיקה רגילה (עם זכויות)"
+        rt = "מוזיקה רגילה " + (FOREIGN_NOTE if s.get("foreign_only") else "(עם זכויות)")
     qty = int(s.get("qty") or 1)
     mp, ip = float(s.get("monthly_price") or 0), float(s.get("install_price") or 0)
     rows = [
@@ -307,7 +309,7 @@ async def _admin_guard(request: web.Request, handler):
 def _public(row: dict) -> dict:
     out = {k: row[k] for k in (
         "id", "business_name", "company_id", "monthly_price", "install_price", "qty",
-        "rights_free", "rights_both", "broadcasts", "broadcast_addon", "rental_months",
+        "rights_free", "rights_both", "foreign_only", "broadcasts", "broadcast_addon", "rental_months",
         "created_at", "viewed_at", "signed_at", "signer", "status")}
     out["link"] = f"{config.PUBLIC_BASE_URL}/q/{row['token']}"
     out["has_pdf"] = True      # אם הקובץ אבד – מפיקים מחדש בעת הצפייה

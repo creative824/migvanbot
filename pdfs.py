@@ -22,6 +22,7 @@ def quote_data_of(row: dict) -> QuoteData:
         qty=int(row.get("qty") or 1),
         rights_free=bool(row.get("rights_free")),
         rights_both=bool(row.get("rights_both")),
+        foreign_only=bool(row.get("foreign_only")),
         broadcasts=int(row.get("broadcasts") or 0),
         broadcast_addon=float(row.get("broadcast_addon") or 0),
         rental_months=int(row.get("rental_months") or 12),

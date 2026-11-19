@@ -38,13 +38,18 @@ def months_label(n: int) -> str:
     return f"{n} חודשים"
 
 
-def track_label(rights_free: bool, rights_both: bool = False) -> str:
+FOREIGN_NOTE = '(חשיפה רק לאקו"ם ופדרציה)'
+
+
+def track_label(rights_free: bool, rights_both: bool = False, foreign_only: bool = False) -> str:
     """נוסח המסלול בשורת המחיר הראשונה."""
     suffix = "כולל עריכת מוזיקה בהתאמה אישית"
     if rights_both:
         return f"מסלול מוזיקה ללא זכויות/עם זכויות (לבחירת הלקוח) {suffix}"
     if rights_free:
         return f"מסלול מוזיקה ללא זכויות {suffix}"
+    if foreign_only:
+        return f"מסלול מוזיקה רגילה {FOREIGN_NOTE} {suffix}"
     return f"מסלול מוזיקה רגילה {suffix}"
 
 
@@ -57,7 +62,8 @@ class QuoteData:
     qty: int = 1
     rights_free: bool = True          # True = מוזיקה ללא זכויות
     rights_both: bool = False         # True = "ללא זכויות/עם זכויות (לבחירת הלקוח)"
-    broadcasts: int = 0               # שירות תשדירים בחודש (0 = לא להציג שורה)
+    foreign_only: bool = False        # מוזיקה רגילה + "(חשיפה רק לאקו"ם ופדרציה)" בשורה הראשונה בלבד
+    broadcasts: int = 0              # שירות תשדירים בחודש (0 = לא להציג שורה)
     broadcast_addon: float = 0.0      # תוספת מחיר לשילוב שירות תשדירים (0 = אין)
     rental_months: int = 12           # תקופת שכירות מינימלית
     address: str = ""
@@ -72,6 +78,7 @@ class QuoteData:
         self.broadcast_addon = max(0.0, float(self.broadcast_addon or 0))
         self.rental_months = max(1, int(self.rental_months or 12))
         self.rights_both = bool(self.rights_both)
+        self.foreign_only = bool(self.foreign_only)
 
     # ── סכומים ──────────────────────────────────────────────
     @property
@@ -110,8 +117,8 @@ class QuoteData:
             broadcast_addon=fmt_money(self.broadcast_addon) if self.broadcast_addon else "",
             no_install=self.no_install,
             rental_label=months_label(self.rental_months),
-            track_label=track_label(self.rights_free, self.rights_both),
-            track_in="ב" + track_label(self.rights_free, self.rights_both),
+            track_label=track_label(self.rights_free, self.rights_both, self.foreign_only),
+            track_in="ב" + track_label(self.rights_free, self.rights_both, self.foreign_only),
         )
 
 
@@ -125,6 +132,9 @@ _RIGHTS_STRIP = re.compile(
     r"\s*(?:(?:מוזיקה\s+)?(?:ללא|בלי|עם|בר[ת]?|בעלת)\s+זכויות(?:\s+דרך\s+מגוון)?|מוזיקה\s+רגיל[הת]?)\s*"
 )
 _BOTH_STRIP = re.compile(r"\s*\(?\s*(?:גם\s*וגם|שניהם|לבחירת\s*הלקוח)\s*\)?\s*")
+# "מוזיקה רגילה רק לועזית" / "רגילה לועזית" / "רגילה עם לועזית" / "רק לועזית" / "לועזית בלבד"
+_FOREIGN_RE = re.compile(
+    r"(?<![א-ת])(?:מוזיקה\s+)?(?:רגיל[הת]?\s+)?(?:(?:רק|עם|בלבד|ו)\s*)?לועזי(?:ת|ים|ות)?(?:\s+בלבד)?(?![א-ת])")
 _NO_INSTALL = re.compile(r"(?:ללא|בלי|אין)\s+התקנ\S*")
 _RENTAL_NUM = re.compile(r"(\d+)\s*חודשים")
 _RENTAL_WORD = re.compile(r"חצי\s+שנה|שנתיים")
@@ -206,12 +216,15 @@ def scan_flags(line: str, out: dict, override: bool = False) -> str:
     work = line
 
     r = rights_in(work)
+    foreign = bool(_FOREIGN_RE.search(work))
+    if foreign:
+        work = _FOREIGN_RE.sub(" ", work).strip(" -,\t")
     if r == "both":
-        put("rights_both", True); put("rights_free", True)
-    elif r == "free":
-        put("rights_free", True); put("rights_both", False)
-    elif r == "paid":
-        put("rights_free", False); put("rights_both", False)
+        put("rights_both", True); put("rights_free", True); put("foreign_only", False)
+    elif r == "free":                       # "ללא זכויות" מפורש גובר על "לועזית"
+        put("rights_free", True); put("rights_both", False); put("foreign_only", False)
+    elif r == "paid" or foreign:
+        put("rights_free", False); put("rights_both", False); put("foreign_only", foreign)
     if r:
         work = clean_rights(work)
 

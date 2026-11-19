@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS quotes (
     rights_both     INTEGER DEFAULT 0,
     broadcast_addon REAL DEFAULT 0,
     rental_months   INTEGER DEFAULT 12,
-    logo            TEXT
+    logo            TEXT,
+    foreign_only    INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_quotes_created ON quotes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_quotes_status ON quotes(status);
@@ -57,6 +58,7 @@ _NEW_COLUMNS = {
     "broadcast_addon": "REAL DEFAULT 0",
     "rental_months": "INTEGER DEFAULT 12",
     "logo": "TEXT",
+    "foreign_only": "INTEGER DEFAULT 0",
 }
 
 
@@ -79,6 +81,7 @@ def _row(r: sqlite3.Row | None) -> dict | None:
     d = dict(r)
     d["rights_free"] = bool(d.get("rights_free"))
     d["rights_both"] = bool(d.get("rights_both"))
+    d["foreign_only"] = bool(d.get("foreign_only"))
     d["qty"] = int(d.get("qty") or 1)
     d["broadcasts"] = int(d.get("broadcasts") or 0)
     d["broadcast_addon"] = float(d.get("broadcast_addon") or 0)
@@ -126,12 +129,13 @@ def create(*, chat_id: int | None, data) -> dict:
         cur = c.execute(
             """INSERT INTO quotes (token, created_at, chat_id, business_name, company_id,
                    monthly_price, install_price, qty, rights_free, broadcasts,
-                   rights_both, broadcast_addon, rental_months)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   rights_both, broadcast_addon, rental_months, foreign_only)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (token, int(time.time()), chat_id, data.business_name, data.company_id or "",
              data.monthly_price, data.install_price, data.qty,
              1 if data.rights_free else 0, data.broadcasts,
-             1 if data.rights_both else 0, data.broadcast_addon, data.rental_months),
+             1 if data.rights_both else 0, data.broadcast_addon, data.rental_months,
+             1 if data.foreign_only else 0),
         )
         qid = cur.lastrowid
     return get(qid)
@@ -143,12 +147,12 @@ def update_data(qid: int, data) -> dict | None:
         c.execute(
             """UPDATE quotes SET business_name=?, company_id=?, monthly_price=?,
                    install_price=?, qty=?, rights_free=?, broadcasts=?,
-                   rights_both=?, broadcast_addon=?, rental_months=?
+                   rights_both=?, broadcast_addon=?, rental_months=?, foreign_only=?
                WHERE id=?""",
             (data.business_name, data.company_id or "", data.monthly_price,
              data.install_price, data.qty, 1 if data.rights_free else 0,
              data.broadcasts, 1 if data.rights_both else 0, data.broadcast_addon,
-             data.rental_months, qid),
+             data.rental_months, 1 if data.foreign_only else 0, qid),
         )
     return get(qid)
 

@@ -35,6 +35,7 @@ import web as signweb
 import shutil
 from urllib.parse import quote_plus
 from quote import (
+    FOREIGN_NOTE,
     months_label,
     scan_flags,
     QuoteData,
@@ -97,14 +98,19 @@ _FIELD_HE = {
     "broadcast_addon": "מחיר עם שירות תשדירים", "rental_months": "תקופת שכירות",
     "want_logo": "לוגו",
 }
-_TRACKED = list(_FIELD_HE) + ["rights_both"]
+_TRACKED = list(_FIELD_HE) + ["rights_both", "foreign_only"]
+_RIGHTS_EXTRAS = ("rights_both", "foreign_only")     # מדווחים תחת "סוג מוזיקה"
 
 
 def _rights_label(r) -> str:
-    """r = מילון (נתוני שיחה או רשומה): ללא זכויות / עם זכויות / שניהם."""
+    """r = מילון (נתוני שיחה או רשומה): ללא זכויות / עם זכויות / שניהם / רגילה לועזית."""
     if r.get("rights_both"):
         return "ללא זכויות / עם זכויות (לבחירת הלקוח)"
-    return "מוזיקה ללא זכויות" if r.get("rights_free", True) else "מוזיקה רגילה (עם זכויות)"
+    if r.get("rights_free", True):
+        return "מוזיקה ללא זכויות"
+    if r.get("foreign_only"):
+        return f"מוזיקה רגילה {FOREIGN_NOTE}"
+    return "מוזיקה רגילה (עם זכויות)"
 
 
 def _fmt_val(k, v, d=None):
@@ -143,7 +149,7 @@ def _absorb_message(context, text: str) -> list[str]:
     d.update(incoming)
     changed = []
     for k in _TRACKED:
-        if k == "rights_both":
+        if k in _RIGHTS_EXTRAS:
             if bool(d.get(k)) != bool(before.get(k)):
                 changed.append("rights_free")
         elif d.get(k) != before.get(k) and d.get(k) not in ("", None):
@@ -498,7 +504,7 @@ async def on_clone_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     d = _d(context)
     for k in ("monthly_price", "install_price", "qty", "rights_free", "rights_both",
-              "broadcasts", "broadcast_addon", "rental_months"):
+              "foreign_only", "broadcasts", "broadcast_addon", "rental_months"):
         d[k] = row[k]
     d["_cloned_from"] = row["business_name"]
     await q.message.reply_text(f"משכפל את ההצעה של \"{row['business_name']}\" — מה שם העסק החדש?")
@@ -540,7 +546,7 @@ async def _handle_clone(update, context, ref_name, new_name, overrides):
         return ConversationHandler.END
 
     for k in ("monthly_price", "install_price", "qty", "rights_free", "rights_both",
-              "broadcasts", "broadcast_addon", "rental_months"):
+              "foreign_only", "broadcasts", "broadcast_addon", "rental_months"):
         if row.get(k) is not None:
             d[k] = row[k]
     d.update(overrides)                       # שינויי מחיר/כמות שנכתבו בהודעה
@@ -602,7 +608,8 @@ async def quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for k, v in edits.items():
                 if prev.get(k) != v:
                     prev[k] = v
-                    changed.append(k)
+                    changed.append("rights_free" if k in _RIGHTS_EXTRAS else k)
+            changed = list(dict.fromkeys(changed))
             if changed:
                 await _report_changes(update, context, changed)
             await update.message.reply_text("מפיק מחדש…")
@@ -617,6 +624,7 @@ async def quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prev.pop(field, None)
             if field == "rights_free":
                 prev.pop("rights_both", None)
+                prev.pop("foreign_only", None)
             if field == "logo":
                 prev["want_logo"] = True
                 prev.pop("logo_done", None)
@@ -741,6 +749,7 @@ async def on_rights(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = _d(context)
     d["rights_free"] = q.data != "rights_paid"
     d["rights_both"] = q.data == "rights_both"
+    d["foreign_only"] = False
     await q.edit_message_text("✅ " + _rights_label(d))
     return await advance(update, context)
 
@@ -790,6 +799,7 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         qty=int(d.get("qty", 1)),
         rights_free=bool(d.get("rights_free", True)),
         rights_both=bool(d.get("rights_both", False)),
+        foreign_only=bool(d.get("foreign_only", False)),
         broadcasts=int(d.get("broadcasts", 0) or 0),
         broadcast_addon=float(d.get("broadcast_addon", 0) or 0),
         rental_months=int(d.get("rental_months", 12) or 12),

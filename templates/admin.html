@@ -116,7 +116,7 @@ function card(r){
     `${money(r.monthly_price)} לחודש לנגן`,
     r.install_price?`התקנה ${money(r.install_price)}`:'ללא התקנה',
     `${r.qty} ${r.qty===1?'נגן':'נגנים'}`,
-    r.rights_both?'ללא זכויות / עם זכויות':(r.rights_free?'ללא זכויות':'מוזיקה רגילה')
+    r.rights_both?'ללא זכויות / עם זכויות':(r.rights_free?'ללא זכויות':(r.foreign_only?'מוזיקה רגילה – לועזית (אקו"ם ופדרציה)':'מוזיקה רגילה'))
   ];
   if(r.broadcast_addon) chips.push(`עם תשדירים ${money(r.broadcast_addon)}`+(r.broadcasts?` (עד ${r.broadcasts} בחודש)`:''));
   else if(r.broadcasts) chips.push(`תשדירים ${r.broadcasts} בחודש`);
